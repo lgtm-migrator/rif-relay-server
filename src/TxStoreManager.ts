@@ -1,14 +1,12 @@
 import AsyncNedb from 'nedb-async';
 import log from 'loglevel';
-import ow from 'ow';
-import { PrefixedHexString } from 'ethereumjs-tx';
-import { isSameAddress } from '@rsksmart/rif-relay-common';
+import { isSameAddress } from './Utils';
 import { ServerAction, StoredTransaction } from './StoredTransaction';
 
 export const TXSTORE_FILENAME = 'txstore.db';
 
 export class TxStoreManager {
-    private readonly txstore: AsyncNedb<any>;
+    private readonly txstore: AsyncNedb<StoredTransaction>;
 
     constructor({ workdir = '/tmp/test/', inMemory = false }) {
         this.txstore = new AsyncNedb({
@@ -16,8 +14,9 @@ export class TxStoreManager {
             autoload: true,
             timestampData: true
         });
-        this.txstore.asyncEnsureIndex({ fieldName: 'txId', unique: true });
-        this.txstore.asyncEnsureIndex({
+        void this.txstore.asyncEnsureIndex({ fieldName: 'txId', unique: true });
+
+        void this.txstore.asyncEnsureIndex({
             fieldName: 'nonceSigner',
             unique: true
         });
@@ -39,13 +38,14 @@ export class TxStoreManager {
         };
         const tx1: StoredTransaction = {
             ...tx,
-            txId: tx.txId.toLowerCase(),
+            txId: tx.txId,
             nonceSigner
         };
-        const existing = await this.txstore.asyncFindOne({
+
+        const existing: StoredTransaction = await this.txstore.asyncFindOne({
             nonceSigner: tx1.nonceSigner
         });
-        // eslint-disable-next-line
+
         if (existing && updateExisting) {
             await this.txstore.asyncUpdate(
                 { txId: existing.txId },
@@ -60,11 +60,11 @@ export class TxStoreManager {
      * Only for testing
      */
     async getTxByNonce(
-        signer: PrefixedHexString,
+        signer: string,
         nonce: number
     ): Promise<StoredTransaction> {
-        ow(nonce, ow.any(ow.number, ow.string));
-        ow(signer, ow.string);
+        /*         ow(nonce, ow.any(ow.number, ow.string));
+                ow(signer, ow.string); */
 
         return await this.txstore.asyncFindOne({
             nonceSigner: {
@@ -78,13 +78,13 @@ export class TxStoreManager {
      * Only for testing
      */
     async getTxById(txId: string): Promise<StoredTransaction> {
-        ow(txId, ow.string);
+        /*  ow(txId, ow.string); */
 
         return await this.txstore.asyncFindOne({ txId: txId.toLowerCase() });
     }
 
     async getTxsUntilNonce(
-        signer: PrefixedHexString,
+        signer: string,
         nonce: number
     ): Promise<StoredTransaction[]> {
         return await this.txstore.asyncFind({
@@ -96,11 +96,11 @@ export class TxStoreManager {
     }
 
     async removeTxsUntilNonce(
-        signer: PrefixedHexString,
+        signer: string,
         nonce: number
     ): Promise<unknown> {
-        ow(nonce, ow.number);
-        ow(signer, ow.string);
+        /*  ow(nonce, ow.number);
+         ow(signer, ow.string); */
 
         return await this.txstore.asyncRemove(
             {
@@ -118,10 +118,11 @@ export class TxStoreManager {
     }
 
     async getAllBySigner(
-        signer: PrefixedHexString
+        signer: string
     ): Promise<StoredTransaction[]> {
+
         return (
-            await this.txstore.asyncFind({
+            await this.txstore.asyncFind<StoredTransaction>({
                 'nonceSigner.signer': signer.toLowerCase()
             })
         ).sort(function (tx1, tx2) {
@@ -130,7 +131,7 @@ export class TxStoreManager {
     }
 
     async getAll(): Promise<StoredTransaction[]> {
-        return (await this.txstore.asyncFind({})).sort(function (tx1, tx2) {
+        return (await this.txstore.asyncFind<StoredTransaction>({})).sort(function (tx1, tx2) {
             return tx1.nonce - tx2.nonce;
         });
     }
@@ -140,6 +141,7 @@ export class TxStoreManager {
         destination: string | undefined = undefined
     ): Promise<boolean> {
         const allTransactions = await this.getAll();
+
         return (
             allTransactions.find(
                 (it) =>

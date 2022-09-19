@@ -1,13 +1,6 @@
-// @ts-ignore
-import EthVal from 'ethval';
 import chalk from 'chalk';
 import log from 'loglevel';
 import { Mutex } from 'async-mutex';
-import {
-    PrefixedHexString,
-    Transaction,
-    TransactionOptions
-} from 'ethereumjs-tx';
 import { ContractInteractor } from '@rsksmart/rif-relay-common';
 import { TxStoreManager } from './TxStoreManager';
 import { KeyManager } from './KeyManager';
@@ -19,9 +12,13 @@ import {
     StoredTransactionMetadata
 } from './StoredTransaction';
 
+import { UnsignedTransaction, Transaction, utils, BigNumber, ContractFunction } from 'ethers';
+import { TransactionReceipt, TransactionResponse } from '@ethersproject/providers';
+
+
 export interface SignedTransactionDetails {
-    transactionHash: PrefixedHexString;
-    signedTx: PrefixedHexString;
+    transactionHash: string;
+    signedTx: string;
 }
 
 export interface SendTransactionDetails {
@@ -37,14 +34,18 @@ export interface SendTransactionDetails {
 
 export class TransactionManager {
     nonceMutex = new Mutex();
-    managerKeyManager: KeyManager;
-    workersKeyManager: KeyManager;
-    contractInteractor: ContractInteractor;
-    nonces: Record<string, number> = {};
-    txStoreManager: TxStoreManager;
-    config: ServerConfigParams;
 
-    rawTxOptions!: TransactionOptions;
+    managerKeyManager: KeyManager;
+
+    workersKeyManager: KeyManager;
+
+    contractInteractor: ContractInteractor;
+
+    nonces: Record<string, number> = {};
+
+    txStoreManager: TxStoreManager;
+
+    config: ServerConfigParams;
 
     constructor(dependencies: ServerDependencies, config: ServerConfigParams) {
         this.contractInteractor = dependencies.contractInteractor;
@@ -56,8 +57,9 @@ export class TransactionManager {
     }
 
     _initNonces(): void {
+        const managerAddress = this.managerKeyManager.getAddress(0);
         // todo: initialize nonces for all signers (currently one manager, one worker)
-        this.nonces[this.managerKeyManager.getAddress(0)] = 0;
+        this.nonces[managerAddress] = 0;
         this.nonces[this.workersKeyManager.getAddress(0)] = 0;
     }
 
@@ -76,9 +78,7 @@ export class TransactionManager {
         gasPrice: number,
         isMaxGasPriceReached: boolean
     ): void {
-        const gasPriceHumanReadableOld: string = new EthVal(gasPrice)
-            .toGwei()
-            .toFixed(4);
+        const gasPriceHumanReadableOld: string = utils.formatUnits(BigNumber.from(gasPrice), 'gwei');
         log.info(`Boosting stale transaction:
 hash         | ${txHash}
 gasPrice     | ${gasPrice} (${gasPriceHumanReadableOld} gwei) ${
@@ -89,39 +89,23 @@ created at   | block #${creationBlockNumber}
     }
 
     printSendTransactionLog(transaction: Transaction, from: string): void {
-        const valueString =
-            transaction.value.length === 0
-                ? '0'
-                : parseInt('0x' + transaction.value.toString('hex')).toString();
-        const nonceString =
-            transaction.nonce.length === 0
-                ? '0'
-                : parseInt('0x' + transaction.nonce.toString('hex'));
-        const gasPriceString = parseInt(
-            '0x' + transaction.gasPrice.toString('hex')
-        );
-
-        const valueHumanReadable: string = new EthVal(valueString)
-            .toEth()
-            .toFixed(4);
-        const gasPriceHumanReadable: string = new EthVal(gasPriceString)
-            .toGwei()
-            .toFixed(4);
+        const valueHumanReadable: string = utils.formatEther(transaction.value);
+        const gasPriceHumanReadable: string = utils.formatUnits(transaction.gasPrice, 'gwei');
         log.info(`Broadcasting transaction:
-hash         | 0x${transaction.hash().toString('hex')}
+hash         | 0x${transaction.hash}
 from         | ${from}
-to           | 0x${transaction.to.toString('hex')}
-value        | ${valueString} (${valueHumanReadable} RBTC)
-nonce        | ${nonceString}
-gasPrice     | ${gasPriceString} (${gasPriceHumanReadable} gwei)
+to           | 0x${transaction.to}
+value        | ${transaction.value.toString()} (${valueHumanReadable} RBTC)
+nonce        | ${transaction.nonce}
+gasPrice     | ${transaction.gasPrice.toString()} (${gasPriceHumanReadable} gwei)
 gasLimit     | ${parseInt('0x' + transaction.gasLimit.toString('hex'))}
-data         | 0x${transaction.data.toString('hex')}
+data         | 0x${transaction.data}
 `);
     }
 
     async attemptEstimateGas(
         methodName: string,
-        method: any,
+        method: ContractFunction,
         from: string
     ): Promise<number> {
         try {
@@ -161,7 +145,7 @@ data         | 0x${transaction.data.toString('hex')}
         let storedTx: StoredTransaction;
         try {
             const nonce = await this.pollNonce(signer);
-            const txToSign = new Transaction(
+            const txToSign = new UnsignedTransaction(
                 {
                     to: destination,
                     value: value,
@@ -277,6 +261,7 @@ data         | 0x${transaction.data.toString('hex')}
                 `txhash mismatch: from receipt: ${transactionHash} from txstore:${storedTx.txId}`
             );
         }
+        
         return {
             transactionHash,
             signedTx
@@ -295,11 +280,12 @@ data         | 0x${transaction.data.toString('hex')}
             isMaxGasPriceReached = true;
             newGasPrice = parseInt(this.config.maxGasPrice);
         }
+
         return { newGasPrice, isMaxGasPriceReached };
     }
 
     async pollNonce(signer: string): Promise<number> {
-        const nonce = await this.contractInteractor.getTransactionCount(
+        const nonce: number = await this.contractInteractor.getTransactionCount(
             signer,
             'pending'
         );
@@ -313,6 +299,7 @@ data         | 0x${transaction.data.toString('hex')}
             );
             this.nonces[signer] = nonce;
         }
+
         return this.nonces[signer];
     }
 
@@ -332,7 +319,7 @@ data         | 0x${transaction.data.toString('hex')}
                 blockNumber - transaction.minedBlockNumber >=
                     this.config.confirmationsNeeded;
             if (shouldRecheck) {
-                const receipt = await this.contractInteractor.getTransaction(
+                const receipt: TransactionResponse = await this.contractInteractor.getTransaction(
                     transaction.txId
                 );
                 if (receipt == null) {
@@ -384,9 +371,9 @@ data         | 0x${transaction.data.toString('hex')}
     async boostUnderpricedPendingTransactionsForSigner(
         signer: string,
         currentBlockHeight: number
-    ): Promise<Map<PrefixedHexString, SignedTransactionDetails>> {
+    ): Promise<Map<string, SignedTransactionDetails>> {
         const boostedTransactions = new Map<
-            PrefixedHexString,
+            string,
             SignedTransactionDetails
         >();
 
@@ -402,6 +389,7 @@ data         | 0x${transaction.data.toString('hex')}
             log.debug(
                 `${signer} : transaction is mined, awaiting confirmations. Account nonce: ${nonce}, oldest transaction: nonce: ${oldestPendingTx.nonce} txId: ${oldestPendingTx.txId}`
             );
+
             return boostedTransactions;
         }
 
@@ -416,6 +404,7 @@ data         | 0x${transaction.data.toString('hex')}
             log.debug(
                 `${signer} : awaiting transaction with ID: ${oldestPendingTx.txId} to be mined. creationBlockNumber: ${oldestPendingTx.creationBlockNumber} nonce: ${nonce}`
             );
+
             return boostedTransactions;
         }
 
@@ -446,6 +435,7 @@ data         | 0x${transaction.data.toString('hex')}
                 );
             }
         }
+
         return boostedTransactions;
     }
 }

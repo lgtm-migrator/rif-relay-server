@@ -1,15 +1,15 @@
-import Wallet, { hdkey as EthereumHDKey } from 'ethereumjs-wallet';
 import fs from 'fs';
-import ow from 'ow';
-import { toHex } from 'web3-utils';
-import { PrefixedHexString, Transaction } from 'ethereumjs-tx';
+import type { Transaction } from 'ethers';
 import log from 'loglevel';
+import {Wallet, utils } from 'ethers';
 
 export const KEYSTORE_FILENAME = 'keystore';
 
 export class KeyManager {
-    private readonly hdkey: any;
-    private _privateKeys: Record<PrefixedHexString, Buffer> = {};
+    private readonly hdkey: utils.HDNode;
+
+    private _privateKeys: Record<string, Buffer> = {};
+    
     private nonces: Record<string, number> = {};
 
     /**
@@ -18,18 +18,17 @@ export class KeyManager {
      * @param seed - if working in memory (no workdir), you can specify a seed - or use randomly generated one.
      */
     constructor(count: number, workdir?: string, seed?: Buffer) {
-        ow(count, ow.number);
+       /*  ow(count, ow.number); */
         if (seed != null && workdir != null) {
             throw new Error("Can't specify both seed and workdir");
         }
 
         if (workdir != null) {
-            // @ts-ignore
             try {
                 if (!fs.existsSync(workdir)) {
                     fs.mkdirSync(workdir, { recursive: true });
                 }
-                let genseed;
+                let genseed: string;
                 const keyStorePath = workdir + '/' + KEYSTORE_FILENAME;
                 if (fs.existsSync(keyStorePath)) {
                     genseed = Buffer.from(
@@ -38,10 +37,10 @@ export class KeyManager {
                         'hex'
                     );
                 } else {
-                    genseed = Wallet.generate().getPrivateKey();
+                    genseed = Wallet.createRandom().privateKey;
                     fs.writeFileSync(
                         keyStorePath,
-                        JSON.stringify({ seed: genseed.toString('hex') }),
+                        JSON.stringify({ seed: genseed }),
                         { flag: 'w' }
                     );
                 }
@@ -59,7 +58,7 @@ export class KeyManager {
         } else {
             // no workdir: working in-memory
             if (seed == null) {
-                seed = Wallet.generate().getPrivateKey();
+                seed = Wallet.createRandom().privateKey;
             }
             this.hdkey = EthereumHDKey.fromMasterSeed(seed ?? Buffer.from(''));
         }
@@ -78,11 +77,11 @@ export class KeyManager {
         }
     }
 
-    getAddress(index: number): PrefixedHexString {
+    getAddress(index: number): string {
         return this.getAddresses()[index];
     }
 
-    getAddresses(): PrefixedHexString[] {
+    getAddresses(): string[] {
         return Object.keys(this._privateKeys);
     }
 
@@ -90,8 +89,8 @@ export class KeyManager {
         return this._privateKeys[signer] != null;
     }
 
-    signTransaction(signer: string, tx: Transaction): PrefixedHexString {
-        ow(signer, ow.string);
+    signTransaction(signer: string, tx: Transaction): string {
+        /* ow(signer, ow.string); */
         const privateKey = this._privateKeys[signer];
         if (privateKey === undefined) {
             throw new Error(`Can't sign: signer=${signer} is not managed`);

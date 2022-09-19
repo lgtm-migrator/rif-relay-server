@@ -1,5 +1,5 @@
-import { PrefixedHexString, Transaction } from 'ethereumjs-tx';
-import * as ethUtils from 'ethereumjs-util';
+import type { Transaction } from 'ethers';
+
 
 export enum ServerAction {
     REGISTER_SERVER,
@@ -23,9 +23,9 @@ export interface StoredTransactionSerialized {
     readonly to: string;
     readonly gas: number;
     readonly gasPrice: number;
-    readonly data: PrefixedHexString;
+    readonly data: string;
     readonly nonce: number;
-    readonly txId: PrefixedHexString;
+    readonly txId: string;
 }
 
 export interface NonceSigner {
@@ -49,12 +49,13 @@ export function createStoredTransaction(
     metadata: StoredTransactionMetadata
 ): StoredTransaction {
     const details: StoredTransactionSerialized = {
-        to: ethUtils.bufferToHex(tx.to),
-        gas: ethUtils.bufferToInt(tx.gasLimit),
-        gasPrice: ethUtils.bufferToInt(tx.gasPrice),
-        data: ethUtils.bufferToHex(tx.data),
-        nonce: ethUtils.bufferToInt(tx.nonce),
-        txId: ethUtils.bufferToHex(tx.hash())
+        to: tx.to,
+        gas: tx.gasLimit.toNumber(),
+        gasPrice:tx.gasPrice.toNumber(),
+        data: tx.data,
+        nonce: tx.nonce,
+        txId: tx.hash
     };
+
     return Object.assign({}, details, metadata);
 }
