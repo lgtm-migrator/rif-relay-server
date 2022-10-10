@@ -2,10 +2,14 @@ import express, { Express, Request, Response } from 'express';
 import jsonrpc, { Defined } from 'jsonrpc-lite';
 import bodyParser from 'body-parser';
 import cors from 'cors';
-import { Server } from 'http';
+import type { Server } from 'http';
 import log from 'loglevel';
 import configureDocumentation from './DocConfiguration';
-import { RelayServer } from './RelayServer';
+import type { RelayServer } from './RelayServer';
+import type {
+    DeployTransactionRequest,
+    RelayTransactionRequest
+} from '@rsksmart/rif-relay-common';
 
 export type RootHandlerRequest = Request & {
     body?: {
@@ -45,6 +49,7 @@ type AvailableRelayMethods = RelayServer[WhitelistedRelayMethod];
 type AvailableRelayMethodParameters = Parameters<AvailableRelayMethods>;
 export class HttpServer {
     app: Express;
+
     private serverInstance?: Server;
 
     constructor(private readonly port: number, readonly backend: RelayServer) {
@@ -60,7 +65,7 @@ export class HttpServer {
         this.app.get('/tokens', this.tokenHandler.bind(this));
         this.app.get('/verifiers', this.verifierHandler.bind(this));
         this.app.post('/relay', this.relayHandler.bind(this));
-        configureDocumentation(this.app, backend.config.url);
+        configureDocumentation(this.app, backend.config.app.url);
         this.backend.once('removed', this.stop.bind(this));
         this.backend.once('unstaked', this.close.bind(this));
         /* eslint-enable */
@@ -108,20 +113,20 @@ export class HttpServer {
         let status;
         let id = -1;
         try {
-            if (!body.id || !body.method) {
+            if (body.id || body.method) {
                 throw Error(
                     'Body request requires id and method to be executed'
                 );
             }
-            id = body.id;
+            id = body.id as number;
             const result = (await this.processRootHandler(
-                body.method,
-                body.params
+                body.method as WhitelistedRelayMethod,
+                body.params as AvailableRelayMethodParameters
             )) ?? { code: 200 };
             status = jsonrpc.success(id, result as Defined);
         } catch (e) {
             if (e instanceof Error) {
-                let stack = e.stack.toString();
+                let stack = e.stack as string;
                 // remove anything after 'rootHandler'
                 stack = stack.replace(/(rootHandler.*)[\s\S]*/, '$1');
                 stack = stack.replace(/(processRootHandler.*)[\s\S]*/, '$1');
@@ -167,12 +172,14 @@ export class HttpServer {
      *             schema:
      *               $ref: '#/components/schemas/PingResponse'
      */
-    async pingHandler(req: Request, res: Response): Promise<void> {
+    pingHandler(_req: Request, res: Response): void {
         try {
-            const pingResponse = await this.backend.pingHandler();
+            const pingResponse = this.backend.pingHandler();
             res.send(pingResponse);
             log.info(
-                `address ${pingResponse.relayWorkerAddress} sent. ready: ${pingResponse.ready}`
+                `address ${pingResponse.relayWorkerAddress} sent. ready: ${
+                    pingResponse.ready ? 'true' : 'false'
+                }`
             );
         } catch (e) {
             if (e instanceof Error) {
@@ -239,11 +246,13 @@ export class HttpServer {
      *                    transactionHash: "0xb8c646c863ff648b6f75f05cbcd84625521ca802d397e6473ba8f5e00e65f169"
      *                  }
      */
-    async relayHandler(req: Request, res: Response): Promise<void> {
+    async relayHandler({ body }: Request, res: Response): Promise<void> {
         try {
-            const { signedTx, transactionHash } =
-                await this.backend.createRelayTransaction(req.body);
-            res.send({ signedTx, transactionHash });
+            const { signedTx, txHash } =
+                await this.backend.createRelayTransaction(
+                    body as RelayTransactionRequest | DeployTransactionRequest
+                );
+            res.send({ signedTx, txHash });
         } catch (e) {
             if (e instanceof Error) {
                 res.send({ error: e.message });
@@ -287,7 +296,7 @@ export class HttpServer {
      */
     async tokenHandler(req: Request, res: Response): Promise<void> {
         try {
-            const verifier = req.query.verifier as string;
+            const verifier = req.query['verifier'] as string;
             const tokenResponse = await this.backend.tokenHandler(verifier);
             res.send(tokenResponse);
         } catch (e) {
@@ -323,9 +332,9 @@ export class HttpServer {
      *               example:
      *                 { trustedVerifiers: ["0x5159345aaB821172e795d56274D0f5FDFdC6aBD9", "0x1eD614cd3443EFd9c70F04b6d777aed947A4b0c4"] }
      */
-    async verifierHandler(_: Request, res: Response): Promise<void> {
+    verifierHandler(_: Request, res: Response): void {
         try {
-            const verifierResponse = await this.backend.verifierHandler();
+            const verifierResponse = this.backend.verifierHandler();
             res.send(verifierResponse);
         } catch (e) {
             if (e instanceof Error) {

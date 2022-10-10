@@ -1,45 +1,39 @@
-import parseArgs from 'minimist';
-import * as fs from 'fs';
-import {
-    VersionRegistry,
-    ContractInteractor,
-    constants
-} from '@rsksmart/rif-relay-common';
-import { configure } from '@rsksmart/rif-relay-client';
-import { KeyManager } from './KeyManager';
-import { TxStoreManager } from './TxStoreManager';
+import type { ContractInteractor } from '@rsksmart/rif-relay-common/dist/src';
 
-//@ts-ignore
-import sourceMapSupport from 'source-map-support';
-//@ts-ignore
-sourceMapSupport.install({ errorFormatterForce: true });
-import { LogLevelNumbers } from 'loglevel';
-import log from 'loglevel';
-import 'dotenv/config';
+import { BigNumber, constants } from 'ethers';
+import type { LogLevelNumbers } from 'loglevel';
 
-// TODO: is there a way to merge the typescript definition ServerConfigParams with the runtime checking ConfigParamTypes ?
-export interface ServerConfigParams {
+import { validateAddress } from './Utils';
+import type { KeyManager } from './KeyManager';
+import type { TxStoreManager } from './TxStoreManager';
+
+export type AppConfig = {
     url: string;
     port: number;
-    versionRegistryAddress: string;
-    versionRegistryDelayPeriod?: number;
-    relayHubId?: string;
-    relayHubAddress: string;
-    rskNodeUrl: string;
     workdir: string;
-    checkInterval: number;
-    readyTimeout: number;
     devMode: boolean;
     customReplenish: boolean;
+    logLevel: LogLevelNumbers;
+    checkInterval: number;
+    readyTimeout: number;
+};
+
+export type ContractsConfig = {
+    versionRegistryAddress: string;
+    relayHubAddress: string;
+    deployVerifierAddress: string;
+    relayVerifierAddress: string;
+    relayHubId?: string;
+    trustedVerifiers: string[];
+};
+
+export type BlockchainConfig = {
+    rskNodeUrl: string;
+    gasPriceFactor: number;
     registrationBlockRate: number;
     alertedBlockDelay: number;
     minAlertedDelayMS: number;
     maxAlertedDelayMS: number;
-    trustedVerifiers: string[];
-    gasPriceFactor: number;
-    logLevel: LogLevelNumbers;
-    deployVerifierAddress: string;
-    relayVerifierAddress: string;
     workerMinBalance: number;
     workerTargetBalance: number;
     managerMinBalance: number;
@@ -50,11 +44,19 @@ export interface ServerConfigParams {
     pendingTransactionTimeoutBlocks: number;
     successfulRoundsForReady: number;
     confirmationsNeeded: number;
-    retryGasPriceFactor: number;
+    retryGasPriceFactor: string;
     maxGasPrice: string;
-    defaultGasLimit: number;
-    estimateGasFactor: number;
-}
+    defaultGasLimit: BigNumber;
+    estimateGasFactor: string;
+    versionRegistryDelayPeriod?: number;
+};
+
+// TODO: is there a way to merge the typescript definition ServerConfigParams with the runtime checking ConfigParamTypes ?
+export type ServerConfigParams = {
+    app: AppConfig;
+    contracts: ContractsConfig;
+    blockchain: BlockchainConfig;
+};
 
 export interface ServerDependencies {
     // TODO: rename as this name is terrible
@@ -65,198 +67,90 @@ export interface ServerDependencies {
 }
 
 const serverDefaultConfiguration: ServerConfigParams = {
-    alertedBlockDelay: 0,
-    minAlertedDelayMS: 0,
-    maxAlertedDelayMS: 0,
-    relayHubAddress: constants.ZERO_ADDRESS,
-    relayVerifierAddress: constants.ZERO_ADDRESS,
-    deployVerifierAddress: constants.ZERO_ADDRESS,
-    trustedVerifiers: [],
-    gasPriceFactor: 1,
-    registrationBlockRate: 0,
-    workerMinBalance: 0.001e18, // 0.001 RBTC
-    workerTargetBalance: 0.003e18, // 0.003 RBTC
-    managerMinBalance: 0.001e18, // 0.001 RBTC
-    managerMinStake: '1', // 1 wei
-    managerTargetBalance: 0.003e18, // 0.003 RBTC
-    minHubWithdrawalBalance: 0.001e18, // 0.001 RBTC
-    checkInterval: 10000,
-    readyTimeout: 30000,
-    devMode: false,
-    customReplenish: false,
-    logLevel: 1,
-    url: 'http://localhost:8090',
-    rskNodeUrl: '',
-    port: 0,
-    versionRegistryAddress: constants.ZERO_ADDRESS,
-    workdir: '',
-    refreshStateTimeoutBlocks: 5,
-    pendingTransactionTimeoutBlocks: 30, // around 5 minutes with 10 seconds block times
-    successfulRoundsForReady: 3, // successful mined blocks to become ready after exception
-    confirmationsNeeded: 12,
-    retryGasPriceFactor: 1.2,
-    defaultGasLimit: 500000,
-    maxGasPrice: (100e9).toString(),
-    estimateGasFactor: 1.2
+    app: {
+        readyTimeout: 30000,
+        devMode: false,
+        customReplenish: false,
+        logLevel: 1,
+        url: 'http://localhost:8090',
+        port: 0,
+        workdir: '',
+        checkInterval: 1000
+    },
+    contracts: {
+        versionRegistryAddress: constants.AddressZero,
+        relayHubAddress: constants.AddressZero,
+        relayVerifierAddress: constants.AddressZero,
+        deployVerifierAddress: constants.AddressZero,
+        trustedVerifiers: []
+    },
+    blockchain: {
+        rskNodeUrl: '',
+        alertedBlockDelay: 0,
+        minAlertedDelayMS: 0,
+        maxAlertedDelayMS: 0,
+        gasPriceFactor: 1,
+        registrationBlockRate: 0,
+        workerMinBalance: 0.001e18, // 0.001 RBTC
+        workerTargetBalance: 0.003e18, // 0.003 RBTC
+        managerMinBalance: 0.001e18, // 0.001 RBTC
+        managerMinStake: '1', // 1 wei
+        managerTargetBalance: 0.003e18, // 0.003 RBTC
+        minHubWithdrawalBalance: 0.001e18, // 0.001 RBTC
+        refreshStateTimeoutBlocks: 5,
+        pendingTransactionTimeoutBlocks: 30, // around 5 minutes with 10 seconds block times
+        successfulRoundsForReady: 3, // successful mined blocks to become ready after exception
+        confirmationsNeeded: 12,
+        retryGasPriceFactor: '1.2',
+        defaultGasLimit: BigNumber.from(500000),
+        maxGasPrice: (100e9).toString(),
+        estimateGasFactor: '1.2'
+    }
 };
-
-const ConfigParamsTypes = {
-    config: 'string',
-    url: 'string',
-    port: 'number',
-    versionRegistryAddress: 'string',
-    versionRegistryDelayPeriod: 'number',
-    relayHubId: 'string',
-    relayHubAddress: 'string',
-    gasPriceFactor: 'number',
-    rskNodeUrl: 'string',
-    workdir: 'string',
-    checkInterval: 'number',
-    readyTimeout: 'number',
-    devMode: 'boolean',
-    customReplenish: 'boolean',
-    logLevel: 'number',
-    registrationBlockRate: 'number',
-    alertedBlockDelay: 'number',
-
-    workerMinBalance: 'number',
-    workerTargetBalance: 'number',
-    managerMinBalance: 'number',
-    managerTargetBalance: 'number',
-    minHubWithdrawalBalance: 'number',
-    defaultGasLimit: 'number',
-
-    trustedVerifiers: 'string',
-    relayVerifierAddress: 'string',
-    deployVerifierAddress: 'string'
-} as any;
-
-// by default: no waiting period - use VersionRegistry entries immediately.
-const DefaultRegistryDelayPeriod = 0;
 
 // helper function: throw and never return..
 function error(err: string): never {
     throw new Error(err);
 }
 
-// get the keys matching specific type from ConfigParamsType
-export function filterType(config: any, type: string): any {
-    return Object.entries(config).flatMap((e) => (e[1] === type ? [e[0]] : []));
-}
-
-// convert [key,val] array (created by Object.entries) back to an object.
-export function entriesToObj(entries: any[]): any {
-    return entries.reduce((set: any, [k, v]) => ({ ...set, [k]: v }), {});
-}
-
-// filter and return from env only members that appear in "config"
-export function filterMembers(env: any, config: any): any {
-    return entriesToObj(
-        Object.entries(env).filter((e) => config[e[0]] != null)
-    );
-}
-
-// map value from string into its explicit type (number, boolean)
-// TODO; maybe we can use it for more specific types, such as "address"..
-export function explicitType([key, val]: [string, any]): any {
-    const type = ConfigParamsTypes[key] as string;
-    if (type === undefined) {
-        error(`unexpected param ${key}=${val as string}`);
-    }
-    switch (type) {
-        case 'boolean':
-            if (val === 'true' || val === true) return [key, true];
-            if (val === 'false' || val === false) return [key, false];
-            break;
-        case 'number': {
-            const v = parseInt(val);
-            if (!isNaN(v)) {
-                return [key, v];
-            }
-            break;
-        }
-        default:
-            return [key, val];
-    }
-    error(`Invalid ${type}: ${key} = ${val as string}`);
-}
-
-/**
- * initialize each parameter from commandline, env or config file (in that order)
- * config file must be provided either as command-line or env (obviously, not in
- * the config file..)
- */
-export function parseServerConfig(args: string[], env: any): any {
-    const envDefaults = filterMembers(env, ConfigParamsTypes);
-
-    const argv = parseArgs(args, {
-        string: filterType(ConfigParamsTypes, 'string'),
-        // boolean: filterType(ConfigParamsTypes, 'boolean'),
-        default: envDefaults
-    });
-    if (argv._.length > 0) {
-        error(`unexpected param(s) ${argv._.join(',')}`);
-    }
-    // @ts-ignore
-    delete argv._;
-    let configFile: Partial<ServerConfigParams> = {};
-    const configFileName = argv.config as string;
-    if (configFileName != null) {
-        if (!fs.existsSync(configFileName)) {
-            error(`unable to read config file "${configFileName}"`);
-        }
-        configFile = JSON.parse(fs.readFileSync(configFileName, 'utf8'));
-    }
-
-    const config = {
-        ...configFile,
-        ...argv
-    };
-    return entriesToObj(Object.entries(config).map(explicitType));
-}
-
 // resolve params, and validate the resulting struct
 export async function resolveServerConfig(
-    config: Partial<ServerConfigParams>,
-    web3provider: any
+    contractsConfig: ContractsConfig,
+    appConfig: AppConfig,
+    contractInteractor: ContractInteractor
 ): Promise<ServerConfigParams> {
-    const contractInteractor = new ContractInteractor(
-        web3provider,
-        configure({ relayHubAddress: config.relayHubAddress })
-    );
-    if (config.versionRegistryAddress != null) {
-        if (config.relayHubAddress != null) {
+    /* if (contractsConfig.versionRegistryAddress != null) {
+        if (contractsConfig.relayHubAddress != null) {
             error(
                 'missing param: must have either relayHubAddress or versionRegistryAddress'
             );
         }
-        const relayHubId =
-            config.relayHubId ??
+        const relayHubId = contractsConfig.relayHubId ??
             error('missing param: relayHubId to read from VersionRegistry');
-        contractInteractor.validateAddress(
-            config.versionRegistryAddress,
+        validateAddress(
+            contractsConfig.versionRegistryAddress,
             'Invalid param versionRegistryAddress: '
         );
         if (
             !(await contractInteractor.isContractDeployed(
-                config.versionRegistryAddress
+                contractsConfig.versionRegistryAddress
             ))
         ) {
             error(
                 'Invalid param versionRegistryAddress: no contract at address ' +
-                    config.versionRegistryAddress
+                contractsConfig.versionRegistryAddress
             );
         }
 
         const versionRegistry = new VersionRegistry(
             web3provider,
-            config.versionRegistryAddress
+            contractsConfig.versionRegistryAddress
         );
         const { version, value, time } = await versionRegistry.getVersion(
             relayHubId,
-            config.versionRegistryDelayPeriod ?? DefaultRegistryDelayPeriod
+            appConfig.versionRegistryDelayPeriod ?? defaultRegistryDelayPeriod
         );
-        contractInteractor.validateAddress(
+        validateAddress(
             value,
             `Invalid param relayHubId ${relayHubId} @ ${version}: not an address:`
         );
@@ -266,31 +160,53 @@ export async function resolveServerConfig(
                 time * 1000
             ).toString()}`
         );
-        config.relayHubAddress = value;
-    } else {
-        if (config.relayHubAddress == null) {
-            error(
-                'missing param: must have either relayHubAddress or versionRegistryAddress'
-            );
-        }
-        contractInteractor.validateAddress(
-            config.relayHubAddress,
-            'invalid param: "relayHubAddress" is not a valid address:'
+        contractsConfig.relayHubAddress = value;
+    } else { */
+    if (contractsConfig.relayHubAddress == null) {
+        error(
+            'missing param: must have either relayHubAddress or versionRegistryAddress'
         );
     }
+    validateAddress(
+        contractsConfig.relayHubAddress,
+        'invalid param: "relayHubAddress" is not a valid address:'
+    );
+    /*  } */
 
     if (
-        !(await contractInteractor.isContractDeployed(config.relayHubAddress))
+        !(await contractInteractor.isContractDeployed(
+            contractsConfig.relayHubAddress
+        ))
     ) {
-        error(`RelayHub: no contract at address ${config.relayHubAddress}`);
+        error(
+            `RelayHub: no contract at address ${contractsConfig.relayHubAddress}`
+        );
     }
-    if (config.url == null) error('missing param: url');
-    if (config.workdir == null) error('missing param: workdir');
-    return { ...serverDefaultConfiguration, ...config };
+    if (appConfig.url == null) error('missing param: url');
+    if (appConfig.workdir == null) error('missing param: workdir');
+
+    return { ...serverDefaultConfiguration, ...contractsConfig, ...appConfig };
 }
 
 export function configureServer(
-    partialConfig: Partial<ServerConfigParams>
+    contractsConfig: ContractsConfig,
+    appConfig: AppConfig,
+    blockchainConfig: BlockchainConfig
 ): ServerConfigParams {
-    return Object.assign({}, serverDefaultConfiguration, partialConfig);
+    const contracts = Object.assign(
+        serverDefaultConfiguration.contracts,
+        contractsConfig
+    );
+    const app = Object.assign(serverDefaultConfiguration.app, appConfig);
+    const blockchain = Object.assign(
+        serverDefaultConfiguration.blockchain,
+        blockchainConfig
+    );
+    const config: ServerConfigParams = {
+        app,
+        contracts,
+        blockchain
+    };
+
+    return config;
 }

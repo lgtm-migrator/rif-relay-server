@@ -1,25 +1,23 @@
 import { CommandClient } from './helpers/CommandClient';
-import {
-    EnvelopingConfig,
-    isSameAddress,
-    constants
-} from '@rsksmart/rif-relay-common';
-import BN from 'bn.js';
-import { fromWei, toBN } from 'web3-utils';
-import { TransactionReceipt } from 'web3-core';
-import { getParams, parseServerConfig } from './helpers/Utils';
+import type { EnvelopingConfig } from '@rsksmart/rif-relay-common';
 import { configure } from '@rsksmart/rif-relay-client';
-// @ts-ignore
-import { ether } from '@openzeppelin/test-helpers';
-import { ServerConfigParams } from '../ServerConfigParams';
+import type {
+    AppConfig,
+    BlockchainConfig,
+    ContractsConfig
+} from '../ServerConfigParams';
 import log from 'loglevel';
+import { BigNumber, utils, constants, Signer } from 'ethers';
+import type { JsonRpcProvider } from '@ethersproject/providers';
+import { isSameAddress } from '../Utils';
+import { default as configuration } from 'config';
 
 export interface RegisterOptions {
     hub: string;
-    from: string;
-    gasPrice: string | BN;
-    stake: string | BN;
-    funds: string | BN;
+    signer: Signer;
+    gasPrice: string | BigNumber;
+    stake: string | BigNumber;
+    funds: string | BigNumber;
     relayUrl: string;
     unstakeDelay: string;
 }
@@ -40,94 +38,93 @@ export class Register extends CommandClient {
             throw new Error('Already registered');
         }
 
-        if (!this.contractInteractor.isInitialized()) {
-            await this.contractInteractor.init();
-        }
+        await this.initContractInteractor();
 
-        const chainId = this.contractInteractor.chainId;
+        const { chainId } = await (
+            this.provider as JsonRpcProvider
+        ).getNetwork();
 
         if (response.chainId !== chainId.toString()) {
             throw new Error(
-                `wrong chain-id: Relayer on (${response.chainId}) but our provider is on (${chainId})`
+                `wrong chain-id: Relayer on (${
+                    response.chainId ?? 0
+                }) but our provider is on (${chainId})`
             );
         }
 
         const relayAddress = response.relayManagerAddress;
-        const relayHubAddress =
-            this.config.relayHubAddress ?? response.relayHubAddress;
-        const relayHub = await this.contractInteractor._createRelayHub(
-            relayHubAddress
-        );
-        const { stake, unstakeDelay, owner } = await relayHub.getStakeInfo(
-            relayAddress
-        );
+        const { stake, unstakeDelay, owner } =
+            await this.contractInteractor!.getStakeInfo(relayAddress);
 
         log.info('Current stake info:');
         log.info('Relayer owner: ', owner);
         log.info('Current unstake delay: ', unstakeDelay);
-        log.info('current stake=', fromWei(stake, 'ether'));
+        log.info(
+            'current stake=',
+            utils.formatUnits(stake.toString(), 'ether')
+        );
 
-        if (
-            owner !== constants.ZERO_ADDRESS &&
-            !isSameAddress(owner, options.from)
-        ) {
-            throw new Error(
-                `Already owned by ${owner}, our account=${options.from}`
-            );
+        const from = await options.signer.getAddress();
+        if (owner !== constants.AddressZero && !isSameAddress(owner, from)) {
+            throw new Error(`Already owned by ${owner}, our account=${from}`);
         }
 
         if (
-            toBN(unstakeDelay).gte(toBN(options.unstakeDelay)) &&
-            toBN(stake).gte(toBN(options.stake.toString()))
+            unstakeDelay.gte(options.unstakeDelay) &&
+            stake.gte(options.stake)
         ) {
             log.info('Relayer already staked');
         } else {
-            const stakeValue = toBN(options.stake.toString()).sub(toBN(stake));
+            const stakeValue = options.stake.sub(stake);
             log.info(
-                `Staking relayer ${fromWei(stakeValue, 'ether')} RBTC`,
-                stake === '0'
+                `Staking relayer ${utils.formatUnits(
+                    stakeValue,
+                    'ether'
+                )} RBTC`,
+                stake.eq(constants.Zero)
                     ? ''
-                    : ` (already has ${fromWei(stake, 'ether')} RBTC)`
+                    : ` (already has ${utils.formatUnits(stake, 'ether')} RBTC)`
             );
 
-            const stakeTx = await relayHub.stakeForAddress(
-                relayAddress,
-                options.unstakeDelay.toString(),
-                {
-                    value: stakeValue,
-                    from: options.from,
-                    gas: 1e6,
-                    gasPrice: options.gasPrice
-                }
-            );
-            transactions.push(stakeTx.tx);
+            const stakeTx = await this.contractInteractor?.relayHub
+                .connect(options.signer)
+                .stakeForAddress(
+                    relayAddress,
+                    options.unstakeDelay.toString(),
+                    {
+                        value: stakeValue,
+                        gasLimit: 1e6,
+                        gasPrice: options.gasPrice
+                    }
+                );
+
+            transactions.push(stakeTx!.hash);
         }
 
-        if (isSameAddress(owner, options.from)) {
+        if (isSameAddress(owner, from)) {
             log.info('Relayer already authorized');
         }
 
-        const bal = await this.contractInteractor.getBalance(relayAddress);
+        const bal = await this.provider.getBalance(relayAddress);
 
-        if (toBN(bal).gt(toBN(options.funds.toString()))) {
+        if (bal.gt(options.funds)) {
             log.info('Relayer already funded');
         } else {
             log.info('Funding relayer');
 
-            const _fundTx = await this.web3.eth.sendTransaction({
-                from: options.from,
+            const fundTx = await options.signer.sendTransaction({
                 to: relayAddress,
                 value: options.funds,
-                gas: 1e6,
+                gasLimit: 1e6,
                 gasPrice: options.gasPrice
             });
-            const fundTx = _fundTx as TransactionReceipt;
-            if (fundTx.transactionHash == null) {
+
+            if (fundTx.hash == null) {
                 throw new Error(
-                    `Fund transaction reverted: ${JSON.stringify(_fundTx)}`
+                    `Fund transaction reverted: ${JSON.stringify(fundTx)}`
                 );
             }
-            transactions.push(fundTx.transactionHash);
+            transactions.push(fundTx.hash);
         }
 
         await this.waitForRelay(options.relayUrl);
@@ -136,36 +133,29 @@ export class Register extends CommandClient {
 }
 
 export async function executeRegister(registerOptions?: RegisterOptions) {
-    const parameters: any = getParams();
-    log.info('Parsed parameters', parameters);
-    const serverConfiguration: ServerConfigParams = parseServerConfig(
-        parameters.config
-    );
+    const appConfig: AppConfig = configuration.get('app');
+    const contractsConfig: ContractsConfig = configuration.get('contracts');
+    const blockchainConfig: BlockchainConfig = configuration.get('blockchain');
+    log.setLevel(appConfig.logLevel);
+
     const register = new Register(
-        serverConfiguration.rskNodeUrl,
-        configure({ relayHubAddress: serverConfiguration.relayHubAddress }),
-        parameters.mnemonic
+        blockchainConfig.rskNodeUrl,
+        configure({ relayHubAddress: contractsConfig.relayHubAddress })
     );
-    const portIncluded: boolean = serverConfiguration.url.indexOf(':') > 0;
+    const portIncluded: boolean = appConfig.url.indexOf(':') > 0;
     const relayUrl =
-        serverConfiguration.url +
-        (!portIncluded && serverConfiguration.port > 0
-            ? ':' + serverConfiguration.port.toString()
+        appConfig.url +
+        (!portIncluded && appConfig.port > 0
+            ? ':' + appConfig.port.toString()
             : '');
     await register.execute(
         registerOptions
             ? registerOptions
             : {
-                  hub: serverConfiguration.relayHubAddress,
-                  from:
-                      parameters.account ??
-                      (await register.findWealthyAccount()),
-                  stake: ether(
-                      parameters.stake ? parameters.stake.toString() : '0.01'
-                  ),
-                  funds: ether(
-                      parameters.funds ? parameters.funds.toString() : '0.02'
-                  ),
+                  hub: contractsConfig.relayHubAddress,
+                  signer: await register.findWealthyAccount(),
+                  stake: utils.parseEther('0.01'),
+                  funds: utils.parseEther('0.02'),
                   relayUrl,
                   unstakeDelay: '1000',
                   gasPrice: '60000000'

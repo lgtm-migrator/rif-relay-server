@@ -1,59 +1,71 @@
 import log from 'loglevel';
-import { EventData, PastEventOptions } from 'web3-eth-contract';
-import { EventEmitter } from 'events';
-import { PrefixedHexString } from 'ethereumjs-tx';
-import { toBN, toHex } from 'web3-utils';
-import {
-    address2topic,
-    AmountRequired,
-    boolString,
+
+import type { EventEmitter } from 'events';
+
+import type {
     ContractInteractor,
-    defaultEnvironment,
-    getLatestEventData,
-    isRegistrationValid,
-    isSecondEventLater,
-    RelayWorkersAdded,
-    StakeAdded,
-    StakeUnlocked,
-    StakeWithdrawn
+    ManagerEvent,
+    PastEventOptions
 } from '@rsksmart/rif-relay-common';
-import { RelayManagerData } from '@rsksmart/rif-relay-contracts';
-import { ServerConfigParams } from './ServerConfigParams';
-import {
+
+import type { ServerConfigParams } from './ServerConfigParams';
+import type {
     SendTransactionDetails,
     TransactionManager
 } from './TransactionManager';
-import { TxStoreManager } from './TxStoreManager';
+import type { TxStoreManager } from './TxStoreManager';
 import { ServerAction } from './StoredTransaction';
 import chalk from 'chalk';
+import { AmountRequired } from './AmountRequired';
+import { defaultEnvironment } from './Environments';
+import { BigNumber, constants } from 'ethers';
+import type { TypedEvent } from '@rsksmart/rif-relay-contracts/typechain-types/common';
+import {
+    boolString,
+    getLatestEventData,
+    isRegistrationValid,
+    isSecondEventLater
+} from './Utils';
+import type { IRelayHub } from '@rsksmart/rif-relay-contracts/typechain-types';
 
-export interface RelayServerRegistryInfo {
+export type RelayServerRegistryInfo = {
     url: string;
-}
+};
 
-const mintxgascost = defaultEnvironment.mintxgascost;
+const mintxgascost = defaultEnvironment?.mintxgascost;
 
 export class RegistrationManager {
     balanceRequired: AmountRequired;
+
     stakeRequired: AmountRequired;
+
     _isStakeLocked = false;
 
     isInitialized = false;
+
     hubAddress: string;
 
     managerAddress: string;
+
     workerAddress: string;
 
     eventEmitter: EventEmitter;
 
     contractInteractor: ContractInteractor;
+
     ownerAddress?: string;
+
     transactionManager: TransactionManager;
+
     config: ServerConfigParams;
+
     txStoreManager: TxStoreManager;
-    relayData: RelayManagerData;
-    lastWorkerAddedTransaction?: EventData;
-    private delayedEvents: Array<{ block: number; eventData: EventData }> = [];
+
+    relayData: IRelayHub.RelayManagerDataStruct | undefined;
+
+    lastWorkerAddedTransaction?: TypedEvent;
+
+    private delayedEvents: Array<{ block: number; eventData: TypedEvent }> = [];
 
     get isStakeLocked(): boolean {
         return this._isStakeLocked;
@@ -85,17 +97,17 @@ export class RegistrationManager {
         };
         this.balanceRequired = new AmountRequired(
             'Balance',
-            toBN(config.managerMinBalance),
+            BigNumber.from(config.blockchain.managerMinBalance),
             listener
         );
         this.stakeRequired = new AmountRequired(
             'Stake',
-            toBN(config.managerMinStake),
+            BigNumber.from(config.blockchain.managerMinStake),
             listener
         );
 
         this.contractInteractor = contractInteractor;
-        this.hubAddress = config.relayHubAddress;
+        this.hubAddress = config.contracts.relayHubAddress;
         this.managerAddress = managerAddress;
         this.workerAddress = workerAddress;
         this.eventEmitter = eventEmitter;
@@ -114,42 +126,48 @@ export class RegistrationManager {
     }
 
     async handlePastEvents(
-        hubEventsSinceLastScan: EventData[],
+        hubEventsSinceLastScan: TypedEvent[],
         lastScannedBlock: number,
         currentBlock: number,
         forceRegistration: boolean
-    ): Promise<PrefixedHexString[]> {
+    ): Promise<string[]> {
         if (!this.isInitialized) {
             throw new Error('RegistrationManager not initialized');
         }
-        const topics = [address2topic(this.managerAddress)];
-        const options: PastEventOptions = {
+        const options = {
             fromBlock: lastScannedBlock + 1,
             toBlock: 'latest'
         };
-        const eventNames = [StakeAdded, StakeUnlocked, StakeWithdrawn];
-        const decodedEvents =
-            await this.contractInteractor.getPastEventsForStakeManagement(
-                eventNames,
-                topics,
-                options
-            );
+
+        type DefaultManagerEvent = Extract<
+            ManagerEvent,
+            'StakeAdded' | 'StakeUnlocked' | 'StakeWithdrawn'
+        >;
+        const eventsNames: DefaultManagerEvent[] = [
+            'StakeAdded',
+            'StakeUnlocked',
+            'StakeWithdrawn'
+        ];
+        const decodedEvents = await this.contractInteractor.getPastEventsForHub(
+            options,
+            eventsNames
+        );
         this.printEvents(decodedEvents, options);
-        let transactionHashes: PrefixedHexString[] = [];
+        let transactionHashes: string[] = [];
         // TODO: what about 'penalize' events? should send balance to owner, I assume
-        for (const eventData of decodedEvents) {
+        for (const eventData of decodedEvents.flat()) {
             switch (eventData.event) {
-                case StakeAdded:
+                case 'StakeAdded':
                     await this.refreshStake();
                     break;
-                case StakeUnlocked:
+                case 'StakeUnlocked':
                     await this.refreshStake();
                     this.delayedEvents.push({
-                        block: eventData.returnValues.withdrawBlock.toString(),
+                        block: eventData.blockNumber, // TO-DO this is not the block, we need the withdraw
                         eventData
                     });
                     break;
-                case StakeWithdrawn:
+                case 'StakeWithdrawn':
                     await this.refreshStake();
                     transactionHashes = transactionHashes.concat(
                         await this._handleStakeWithdrawnEvent(
@@ -165,7 +183,7 @@ export class RegistrationManager {
 
         for (const eventData of hubEventsSinceLastScan) {
             switch (eventData.event) {
-                case RelayWorkersAdded:
+                case 'RelayWorkersAdded':
                     if (
                         this.lastWorkerAddedTransaction == null ||
                         isSecondEventLater(
@@ -182,7 +200,7 @@ export class RegistrationManager {
         // handle HubUnauthorized only after the due time
         for (const eventData of this._extractDuePendingEvents(currentBlock)) {
             switch (eventData.event) {
-                case StakeUnlocked:
+                case 'StakeUnlocked':
                     transactionHashes = transactionHashes.concat(
                         await this._handleStakeUnlockedEvent(
                             eventData,
@@ -193,7 +211,7 @@ export class RegistrationManager {
             }
         }
 
-        const isRegistrationCorrect = await this._isRegistrationCorrect();
+        const isRegistrationCorrect = this._isRegistrationCorrect();
         const isRegistrationPending = await this.txStoreManager.isActionPending(
             ServerAction.REGISTER_SERVER
         );
@@ -205,11 +223,12 @@ export class RegistrationManager {
                 await this.attemptRegistration(currentBlock)
             );
         }
+
         return transactionHashes;
     }
 
-    async getRelayData(): Promise<RelayManagerData> {
-        const relayData: RelayManagerData[] =
+    async getRelayData(): Promise<IRelayHub.RelayManagerDataStruct> {
+        const relayData: IRelayHub.RelayManagerDataStruct[] =
             await this.contractInteractor.getRelayInfo(
                 new Set<string>([this.managerAddress])
             );
@@ -218,62 +237,48 @@ export class RegistrationManager {
                 'More than one relay manager found for ' + this.managerAddress
             );
         }
-        if (relayData.length == 1) {
+        if (relayData.length == 1 && relayData[0]) {
             return relayData[0];
         }
         throw new Error('No relay manager found for ' + this.managerAddress);
     }
 
-    _extractDuePendingEvents(currentBlock: number): EventData[] {
+    _extractDuePendingEvents(currentBlock: number): TypedEvent[] {
         const ret = this.delayedEvents
             .filter((event) => event.block <= currentBlock)
             .map((e) => e.eventData);
         this.delayedEvents = [
             ...this.delayedEvents.filter((event) => event.block > currentBlock)
         ];
+
         return ret;
     }
 
     _isRegistrationCorrect(): boolean {
         return isRegistrationValid(
             this.relayData,
-            this.config,
+            this.config.app,
             this.managerAddress
         );
     }
 
-    _parseEvent(
-        event: { events: any[]; name: string; address: string } | null
-    ): any {
-        if (event?.events === undefined) {
-            // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-            return `not event: ${event?.toString()}`;
-        }
-        const args: Record<string, any> = {};
-        // event arguments is for some weird reason give as ".events"
-        for (const eventArgument of event.events) {
-            args[eventArgument.name] = eventArgument.value;
-        }
-        return {
-            name: event.name,
-            address: event.address,
-            args: args
-        };
-    }
+    // I erased _parseEvent since its not being used
 
     async _handleStakeWithdrawnEvent(
-        dlog: EventData,
+        dlog: TypedEvent,
         currentBlock: number
-    ): Promise<PrefixedHexString[]> {
+    ): Promise<string[]> {
         log.warn('Handling StakeWithdrawn event:', dlog);
+
         return await this.withdrawAllFunds(true, currentBlock);
     }
 
     async _handleStakeUnlockedEvent(
-        dlog: EventData,
+        dlog: TypedEvent,
         currentBlock: number
-    ): Promise<PrefixedHexString[]> {
+    ): Promise<string[]> {
         log.warn('Handling StakeUnlocked event:', dlog);
+
         return await this.withdrawAllFunds(false, currentBlock);
     }
 
@@ -285,8 +290,8 @@ export class RegistrationManager {
     async withdrawAllFunds(
         withdrawManager: boolean,
         currentBlock: number
-    ): Promise<PrefixedHexString[]> {
-        let transactionHashes: PrefixedHexString[] = [];
+    ): Promise<string[]> {
+        let transactionHashes: string[] = [];
         transactionHashes = transactionHashes.concat(
             await this._sendWorkersEthBalancesToOwner(currentBlock)
         );
@@ -297,6 +302,7 @@ export class RegistrationManager {
         }
 
         this.eventEmitter.emit('unstaked');
+
         return transactionHashes;
     }
 
@@ -304,20 +310,21 @@ export class RegistrationManager {
         const currentBalance = await this.contractInteractor.getBalance(
             this.managerAddress
         );
-        this.balanceRequired.currentValue = toBN(currentBalance);
+        this.balanceRequired.currentValue = currentBalance;
     }
 
     async refreshStake(): Promise<void> {
         const stakeInfo = await this.contractInteractor.getStakeInfo(
             this.managerAddress
         );
-        const stake = toBN(stakeInfo.stake);
-        if (stake.eq(toBN(0))) {
+
+        const stake = stakeInfo.stake;
+        if (stake.eq(constants.Zero)) {
             return;
         }
 
         // a locked stake does not have the 'withdrawBlock' field set
-        this.isStakeLocked = stakeInfo.withdrawBlock === '0';
+        this.isStakeLocked = stakeInfo.withdrawBlock.eq(constants.Zero);
         this.stakeRequired.currentValue = stake;
 
         // first time getting stake, setting owner
@@ -328,12 +335,12 @@ export class RegistrationManager {
         }
     }
 
-    async addRelayWorker(currentBlock: number): Promise<PrefixedHexString> {
+    async addRelayWorker(currentBlock: number): Promise<string> {
         // register on chain
         const addRelayWorkerMethod =
-            await this.contractInteractor.getAddRelayWorkersMethod([
-                this.workerAddress
-            ]);
+            await this.contractInteractor.relayHub.populateTransaction.addRelayWorkers(
+                [this.workerAddress]
+            );
         const gasLimit = await this.transactionManager.attemptEstimateGas(
             'AddRelayWorkers',
             addRelayWorkerMethod,
@@ -347,15 +354,15 @@ export class RegistrationManager {
             destination: this.hubAddress,
             creationBlockNumber: currentBlock
         };
-        const { transactionHash } =
-            await this.transactionManager.sendTransaction(details);
-        return transactionHash;
+        const { txHash } = await this.transactionManager.sendTransaction(
+            details
+        );
+
+        return txHash;
     }
 
     // TODO: extract worker registration sub-flow
-    async attemptRegistration(
-        currentBlock: number
-    ): Promise<PrefixedHexString[]> {
+    async attemptRegistration(currentBlock: number): Promise<string[]> {
         const allPrerequisitesOk =
             this.isStakeLocked &&
             this.stakeRequired.isSatisfied &&
@@ -364,10 +371,11 @@ export class RegistrationManager {
             log.info(
                 'Not all prerequisites for registration are met yet. Registration attempt cancelled'
             );
+
             return [];
         }
 
-        let transactions: PrefixedHexString[] = [];
+        let transactions: string[] = [];
         // add worker only if not already added
         const workersAdded = this._isWorkerValid();
         const addWorkersPending = await this.txStoreManager.isActionPending(
@@ -378,14 +386,16 @@ export class RegistrationManager {
             transactions = transactions.concat(txHash);
         }
 
-        const portIncluded: boolean = this.config.url.indexOf(':') > 0;
+        const portIncluded: boolean = this.config.app.url.indexOf(':') > 0;
         const registerUrl =
-            this.config.url +
-            (!portIncluded && this.config.port > 0
-                ? ':' + this.config.port.toString()
+            this.config.app.url +
+            (!portIncluded && this.config.app.port > 0
+                ? ':' + this.config.app.port.toString()
                 : '');
         const registerMethod =
-            await this.contractInteractor.getRegisterRelayMethod(registerUrl);
+            await this.contractInteractor.relayHub.populateTransaction.registerRelayServer(
+                registerUrl
+            );
         const gasLimit = await this.transactionManager.attemptEstimateGas(
             'RegisterRelay',
             registerMethod,
@@ -399,26 +409,29 @@ export class RegistrationManager {
             destination: this.hubAddress,
             creationBlockNumber: currentBlock
         };
-        const { transactionHash } =
-            await this.transactionManager.sendTransaction(details);
-        transactions = transactions.concat(transactionHash);
+        const { txHash } = await this.transactionManager.sendTransaction(
+            details
+        );
+        transactions = transactions.concat(txHash);
         log.debug(
             `Relay ${this.managerAddress} registered on hub ${this.hubAddress}. `
         );
+
         return transactions;
     }
 
     async _sendManagerEthBalanceToOwner(
         currentBlock: number
-    ): Promise<PrefixedHexString[]> {
-        const gasPrice = await this.contractInteractor.getGasPrice();
-        const transactionHashes: PrefixedHexString[] = [];
-        const gasLimit = mintxgascost;
-        const txCost = toBN(gasLimit).mul(toBN(gasPrice));
+    ): Promise<string[]> {
+        const gasPrice = await this.contractInteractor.provider.getGasPrice();
+        const transactionHashes: string[] = [];
+        const gasLimit = BigNumber.from(mintxgascost);
+        const txCost = gasPrice.mul(gasLimit);
 
-        const managerBalance = toBN(
-            await this.contractInteractor.getBalance(this.managerAddress)
+        const managerBalance = await this.contractInteractor.getBalance(
+            this.managerAddress
         );
+        const value = managerBalance.sub(txCost);
         // sending manager RBTC balance to owner
         if (managerBalance.gte(txCost)) {
             log.info(
@@ -427,86 +440,84 @@ export class RegistrationManager {
             const details: SendTransactionDetails = {
                 signer: this.managerAddress,
                 serverAction: ServerAction.VALUE_TRANSFER,
-                destination: this.ownerAddress,
+                destination: this.ownerAddress ?? '',
                 gasLimit,
                 gasPrice,
-                value: toHex(managerBalance.sub(txCost)),
+                value,
                 creationBlockNumber: currentBlock
             };
-            const { transactionHash } =
-                await this.transactionManager.sendTransaction(details);
-            transactionHashes.push(transactionHash);
+            const { txHash } = await this.transactionManager.sendTransaction(
+                details
+            );
+            transactionHashes.push(txHash);
         } else {
             log.error(
-                `manager balance too low: ${managerBalance.toString()}, tx cost: ${
-                    gasLimit * parseInt(gasPrice)
-                }`
+                `manager balance too low: ${managerBalance.toString()}, tx cost: ${txCost.toString()}`
             );
         }
+
         return transactionHashes;
     }
 
     async _sendWorkersEthBalancesToOwner(
         currentBlock: number
-    ): Promise<PrefixedHexString[]> {
+    ): Promise<string[]> {
         // sending workers' balance to owner (currently one worker, todo: extend to multiple)
-        const transactionHashes: PrefixedHexString[] = [];
-        const gasPrice = await this.contractInteractor.getGasPrice();
-        const gasLimit = mintxgascost;
-        const txCost = toBN(gasLimit * parseInt(gasPrice));
-        const workerBalance = toBN(
-            await this.contractInteractor.getBalance(this.workerAddress)
+        const transactionHashes: string[] = [];
+        const gasPrice = await this.contractInteractor.provider.getGasPrice();
+        const gasLimit = BigNumber.from(mintxgascost);
+        const txCost = gasPrice.mul(gasLimit);
+        const workerBalance = await this.contractInteractor.getBalance(
+            this.workerAddress
         );
+        const value = workerBalance.sub(txCost);
         if (workerBalance.gte(txCost)) {
             log.info(
                 `Sending workers' RBTC balance ${workerBalance.toString()} to owner`
             );
-            const details = {
+            const details: SendTransactionDetails = {
                 signer: this.workerAddress,
                 serverAction: ServerAction.VALUE_TRANSFER,
-                destination: this.ownerAddress,
+                destination: this.ownerAddress ?? '',
                 gasLimit,
                 gasPrice,
-                value: toHex(workerBalance.sub(txCost)),
+                value,
                 creationBlockNumber: currentBlock
             };
-            const { transactionHash } =
-                await this.transactionManager.sendTransaction(details);
-            transactionHashes.push(transactionHash);
+            const { txHash } = await this.transactionManager.sendTransaction(
+                details
+            );
+            transactionHashes.push(txHash);
         } else {
             log.info(
-                `balance too low: ${workerBalance.toString()}, tx cost: ${
-                    gasLimit * parseInt(gasPrice)
-                }`
+                `balance too low: ${workerBalance.toString()}, tx cost: ${txCost.toString()}`
             );
         }
+
         return transactionHashes;
     }
 
-    async _queryLatestWorkerAddedEvent(): Promise<EventData | undefined> {
+    async _queryLatestWorkerAddedEvent(): Promise<TypedEvent | undefined> {
         const workersAddedEvents =
             await this.contractInteractor.getPastEventsForHub(
-                [address2topic(this.managerAddress)],
                 {
                     fromBlock: 1
                 },
-                [RelayWorkersAdded]
+                ['RelayWorkersAdded']
             );
+
         return getLatestEventData(workersAddedEvents);
     }
 
     _isWorkerValid(): boolean {
-        // eslint-disable-next-line @typescript-eslint/prefer-optional-chain
-        return (
-            this.lastWorkerAddedTransaction != null &&
-            this.lastWorkerAddedTransaction.returnValues.newRelayWorkers
-                .map((a: string) => a.toLowerCase())
-                .includes(this.workerAddress.toLowerCase())
-        );
+        return this.lastWorkerAddedTransaction
+            ? this.lastWorkerAddedTransaction.event === 'RelayWorkersAdded'
+            : false;
     }
 
-    async isRegistered(): Promise<boolean> {
+    isRegistered(): boolean {
         const isRegistrationCorrect = this._isRegistrationCorrect();
+
         return (
             this.stakeRequired.isSatisfied &&
             this.isStakeLocked &&
@@ -529,18 +540,22 @@ Owner          | ${this.ownerAddress ?? chalk.red('k256')}
         log.info(message);
     }
 
-    printEvents(decodedEvents: EventData[], options: PastEventOptions): void {
+    printEvents(
+        decodedEvents: Array<Array<TypedEvent>>,
+        { fromBlock }: PastEventOptions
+    ): void {
+        const flatDecodedEvents = decodedEvents.flat();
         if (decodedEvents.length === 0) {
             return;
         }
         log.info(
-            `Handling ${
-                decodedEvents.length
-            } events emitted since block: ${options.fromBlock?.toString()}`
+            `Handling ${flatDecodedEvents.length} events emitted since block: ${
+                fromBlock?.toString() ?? ''
+            }`
         );
-        for (const decodedEvent of decodedEvents) {
+        for (const decodedEvent of flatDecodedEvents) {
             log.info(`
-Name      | ${decodedEvent.event.padEnd(25)}
+Name      | ${decodedEvent.event?.padEnd(25) ?? ''}
 Block     | ${decodedEvent.blockNumber}
 TxHash    | ${decodedEvent.transactionHash}
 `);

@@ -1,50 +1,57 @@
-import BN from 'bn.js';
-import HDWalletProvider from '@truffle/hdwallet-provider';
-import Web3 from 'web3';
-import { HttpProvider } from 'web3-core';
 import {
     ContractInteractor,
-    EnvelopingConfig,
-    sleep
+    EnvelopingConfig
 } from '@rsksmart/rif-relay-common';
 import { HttpClient, HttpWrapper } from '@rsksmart/rif-relay-client';
-// @ts-ignore
-import { ether } from '@openzeppelin/test-helpers';
 import log from 'loglevel';
+import { JsonRpcProvider } from '@ethersproject/providers';
+import { BigNumber, Wallet, utils, Signer } from 'ethers';
+import { sleep } from '../../Utils';
 
 /**
  * This is helper class to execute commands to interact with the server
  */
 export abstract class CommandClient {
-    protected readonly contractInteractor: ContractInteractor;
     protected readonly httpClient: HttpClient;
+
     protected readonly config: EnvelopingConfig;
-    protected readonly web3: Web3;
+
+    protected readonly provider: JsonRpcProvider | Wallet;
+
+    protected contractInteractor: ContractInteractor | undefined;
 
     constructor(host: string, config: EnvelopingConfig, mnemonic?: string) {
-        let provider: HttpProvider | HDWalletProvider =
-            new Web3.providers.HttpProvider(host);
-        if (mnemonic != null) {
-            provider = new HDWalletProvider(
-                mnemonic as any,
-                provider as any
-            ) as unknown as HttpProvider;
+        this.provider = new JsonRpcProvider(host);
+        if (mnemonic) {
+            this.provider = Wallet.fromMnemonic(mnemonic);
         }
         this.httpClient = new HttpClient(new HttpWrapper(), config);
-        this.contractInteractor = new ContractInteractor(provider, config);
         this.config = config;
-        this.web3 = new Web3(provider);
     }
 
-    async findWealthyAccount(requiredBalance = ether('2')): Promise<string> {
+    async initContractInteractor() {
+        this.contractInteractor = await ContractInteractor.getInstance(
+            this.provider as JsonRpcProvider,
+            this.config
+        );
+    }
+
+    async findWealthyAccount(
+        requiredBalance: BigNumber = utils.parseUnits('2', 'ether')
+    ): Promise<Signer> {
         let accounts: string[] = [];
         try {
-            accounts = await this.web3.eth.getAccounts();
-            for (const account of accounts) {
-                const balance = new BN(await this.web3.eth.getBalance(account));
+            const tempProvider = this.provider as JsonRpcProvider;
+            accounts = await tempProvider.listAccounts();
+            for (let i = 0; i < accounts.length; i++) {
+                const signer = tempProvider.getSigner(i);
+                const balance = await signer.getBalance();
                 if (balance.gte(requiredBalance)) {
-                    log.info(`Found funded account ${account}`);
-                    return account;
+                    log.info(
+                        `Found funded account ${await signer.getAddress()}`
+                    );
+
+                    return signer;
                 }
             }
         } catch (error) {
@@ -59,6 +66,7 @@ export abstract class CommandClient {
 
     async isRelayReady(relayUrl: string): Promise<boolean> {
         const response = await this.httpClient.getPingResponse(relayUrl);
+
         return response.ready;
     }
 
@@ -85,5 +93,5 @@ export abstract class CommandClient {
         throw Error(`Relay not ready after ${timeout}s`);
     }
 
-    abstract execute(args: any): Promise<void>;
+    abstract execute(args: unknown): Promise<void>;
 }

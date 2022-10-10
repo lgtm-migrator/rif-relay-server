@@ -1,5 +1,4 @@
-import type { Transaction } from 'ethers';
-
+import type { BigNumber, BytesLike, PopulatedTransaction } from 'ethers';
 
 export enum ServerAction {
     REGISTER_SERVER,
@@ -11,6 +10,7 @@ export enum ServerAction {
 }
 
 export interface StoredTransactionMetadata {
+    readonly txId: string;
     readonly from: string;
     readonly attempts: number;
     readonly serverAction: ServerAction;
@@ -20,12 +20,11 @@ export interface StoredTransactionMetadata {
 }
 
 export interface StoredTransactionSerialized {
-    readonly to: string;
-    readonly gas: number;
-    readonly gasPrice: number;
-    readonly data: string;
+    readonly to: string | undefined;
+    readonly gasLimit: BigNumber;
+    readonly gasPrice: BigNumber;
+    readonly data: BytesLike | undefined;
     readonly nonce: number;
-    readonly txId: string;
 }
 
 export interface NonceSigner {
@@ -45,16 +44,15 @@ export type StoredTransaction = StoredTransactionSerialized &
  * @param metadata
  */
 export function createStoredTransaction(
-    tx: Transaction,
+    tx: PopulatedTransaction,
     metadata: StoredTransactionMetadata
 ): StoredTransaction {
     const details: StoredTransactionSerialized = {
         to: tx.to,
-        gas: tx.gasLimit.toNumber(),
-        gasPrice:tx.gasPrice.toNumber(),
+        gasLimit: tx.gasLimit!,
+        gasPrice: tx.gasPrice!,
         data: tx.data,
-        nonce: tx.nonce,
-        txId: tx.hash
+        nonce: tx.nonce ?? 0
     };
 
     return Object.assign({}, details, metadata);

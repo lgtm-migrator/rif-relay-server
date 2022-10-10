@@ -1,15 +1,19 @@
 import fs from 'fs';
-import type { Transaction } from 'ethers';
 import log from 'loglevel';
-import {Wallet, utils } from 'ethers';
+import { Wallet, utils, PopulatedTransaction } from 'ethers';
+import type { SignedTransactionDetails } from './TransactionManager';
 
 export const KEYSTORE_FILENAME = 'keystore';
 
-export class KeyManager {
-    private readonly hdkey: utils.HDNode;
+type keystore = {
+    seed: string;
+};
 
-    private _privateKeys: Record<string, Buffer> = {};
-    
+export class KeyManager {
+    private readonly hdkey!: utils.HDNode;
+
+    private _privateKeys: Record<string, string> = {};
+
     private nonces: Record<string, number> = {};
 
     /**
@@ -17,9 +21,9 @@ export class KeyManager {
      * @param workdir - read seed from keystore file (or generate one and write it)
      * @param seed - if working in memory (no workdir), you can specify a seed - or use randomly generated one.
      */
-    constructor(count: number, workdir?: string, seed?: Buffer) {
-       /*  ow(count, ow.number); */
-        if (seed != null && workdir != null) {
+    constructor(count: number, workdir?: string, seed?: string) {
+        /*  ow(count, ow.number); */
+        if (seed && workdir) {
             throw new Error("Can't specify both seed and workdir");
         }
 
@@ -31,11 +35,10 @@ export class KeyManager {
                 let genseed: string;
                 const keyStorePath = workdir + '/' + KEYSTORE_FILENAME;
                 if (fs.existsSync(keyStorePath)) {
-                    genseed = Buffer.from(
-                        JSON.parse(fs.readFileSync(keyStorePath).toString())
-                            .seed,
-                        'hex'
-                    );
+                    const seedObject = JSON.parse(
+                        fs.readFileSync(keyStorePath).toString()
+                    ) as keystore;
+                    genseed = seedObject.seed;
                 } else {
                     genseed = Wallet.createRandom().privateKey;
                     fs.writeFileSync(
@@ -44,7 +47,7 @@ export class KeyManager {
                         { flag: 'w' }
                     );
                 }
-                this.hdkey = EthereumHDKey.fromMasterSeed(genseed);
+                this.hdkey = utils.HDNode.fromSeed(genseed);
             } catch (e) {
                 if (
                     e instanceof Error &&
@@ -60,7 +63,7 @@ export class KeyManager {
             if (seed == null) {
                 seed = Wallet.createRandom().privateKey;
             }
-            this.hdkey = EthereumHDKey.fromMasterSeed(seed ?? Buffer.from(''));
+            this.hdkey = utils.HDNode.fromSeed(seed ?? Buffer.from(''));
         }
 
         this.generateKeys(count);
@@ -70,14 +73,13 @@ export class KeyManager {
         this._privateKeys = {};
         this.nonces = {};
         for (let index = 0; index < count; index++) {
-            const w = this.hdkey.deriveChild(index).getWallet();
-            const address = toHex(w.getAddress());
-            this._privateKeys[address] = w.getPrivateKey();
+            const w = this.hdkey.derivePath(index.toString());
+            this._privateKeys[w.address] = w.privateKey;
             this.nonces[index] = 0;
         }
     }
 
-    getAddress(index: number): string {
+    getAddress(index: number): string | undefined {
         return this.getAddresses()[index];
     }
 
@@ -89,15 +91,21 @@ export class KeyManager {
         return this._privateKeys[signer] != null;
     }
 
-    signTransaction(signer: string, tx: Transaction): string {
+    async signTransaction(
+        address: string,
+        utx: PopulatedTransaction
+    ): Promise<SignedTransactionDetails> {
         /* ow(signer, ow.string); */
-        const privateKey = this._privateKeys[signer];
+        const privateKey = this._privateKeys[address];
         if (privateKey === undefined) {
-            throw new Error(`Can't sign: signer=${signer} is not managed`);
+            throw new Error(`Can't sign: signer=${address} is not managed`);
         }
 
-        tx.sign(privateKey);
-        const rawTx = '0x' + tx.serialize().toString('hex');
-        return rawTx;
+        const signer = new Wallet(privateKey);
+        const signedTx = await signer.signTransaction(utx);
+
+        const txHash = utils.keccak256(signedTx);
+
+        return { signedTx, txHash };
     }
 }

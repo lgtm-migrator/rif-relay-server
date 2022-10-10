@@ -1,7 +1,7 @@
 import AsyncNedb from 'nedb-async';
 import log from 'loglevel';
 import { isSameAddress } from './Utils';
-import { ServerAction, StoredTransaction } from './StoredTransaction';
+import type { ServerAction, StoredTransaction } from './StoredTransaction';
 
 export const TXSTORE_FILENAME = 'txstore.db';
 
@@ -28,7 +28,6 @@ export class TxStoreManager {
     }
 
     async putTx(tx: StoredTransaction, updateExisting = false): Promise<void> {
-        // eslint-disable-next-line
         if (!tx || !tx.txId || !tx.attempts || tx.nonce === undefined) {
             throw new Error('Invalid tx:' + JSON.stringify(tx));
         }
@@ -95,10 +94,7 @@ export class TxStoreManager {
         });
     }
 
-    async removeTxsUntilNonce(
-        signer: string,
-        nonce: number
-    ): Promise<unknown> {
+    async removeTxsUntilNonce(signer: string, nonce: number): Promise<unknown> {
         /*  ow(nonce, ow.number);
          ow(signer, ow.string); */
 
@@ -117,10 +113,7 @@ export class TxStoreManager {
         await this.txstore.asyncRemove({}, { multi: true });
     }
 
-    async getAllBySigner(
-        signer: string
-    ): Promise<StoredTransaction[]> {
-
+    async getAllBySigner(signer: string): Promise<StoredTransaction[]> {
         return (
             await this.txstore.asyncFind<StoredTransaction>({
                 'nonceSigner.signer': signer.toLowerCase()
@@ -131,9 +124,11 @@ export class TxStoreManager {
     }
 
     async getAll(): Promise<StoredTransaction[]> {
-        return (await this.txstore.asyncFind<StoredTransaction>({})).sort(function (tx1, tx2) {
-            return tx1.nonce - tx2.nonce;
-        });
+        return (await this.txstore.asyncFind<StoredTransaction>({})).sort(
+            function (tx1, tx2) {
+                return tx1.nonce - tx2.nonce;
+            }
+        );
     }
 
     async isActionPending(
@@ -147,7 +142,8 @@ export class TxStoreManager {
                 (it) =>
                     it.minedBlockNumber == null &&
                     it.serverAction === serverAction &&
-                    (destination == null || isSameAddress(it.to, destination))
+                    (destination == null ||
+                        (it.to && isSameAddress(it.to, destination)))
             ) != null
         );
     }

@@ -1,17 +1,16 @@
-import { PrefixedHexString } from 'ethereumjs-tx/dist/types';
-import { toBN, toHex } from 'web3-utils';
-import { defaultEnvironment } from '@rsksmart/rif-relay-common';
-import { RelayServer } from './RelayServer';
+import type { RelayServer } from './RelayServer';
 import { ServerAction } from './StoredTransaction';
-import { SendTransactionDetails } from './TransactionManager';
+import type { SendTransactionDetails } from './TransactionManager';
 import log from 'loglevel';
+import { BigNumber } from 'ethers';
+import { defaultEnvironment } from './Environments';
 
 export async function replenishStrategy(
     relayServer: RelayServer,
     workerIndex: number,
     currentBlock: number
-): Promise<PrefixedHexString[]> {
-    let transactionHashes: PrefixedHexString[] = [];
+): Promise<string[]> {
+    let transactionHashes: string[] = [];
     if (relayServer.isCustomReplenish()) {
         // If custom replenish is settled, here should be a call to a custom function for replenish workers strategy.
         // Delete the next error if a custom replenish fuction is implemented.
@@ -33,14 +32,14 @@ async function defaultReplenishFunction(
     relayServer: RelayServer,
     workerIndex: number,
     currentBlock: number
-): Promise<PrefixedHexString[]> {
-    const transactionHashes: PrefixedHexString[] = [];
+): Promise<string[]> {
+    const transactionHashes: string[] = [];
     let managerEthBalance = await relayServer.getManagerBalance();
     relayServer.workerBalanceRequired.currentValue =
         await relayServer.getWorkerBalance(workerIndex);
     if (
         managerEthBalance.gte(
-            toBN(relayServer.config.managerTargetBalance.toString())
+            relayServer.config.blockchain.managerTargetBalance
         ) &&
         relayServer.workerBalanceRequired.isSatisfied
     ) {
@@ -55,9 +54,12 @@ async function defaultReplenishFunction(
             relayServer.workerAddress
         );
     if (mustReplenishWorker && !isReplenishPendingForWorker) {
-        const refill = toBN(
-            relayServer.config.workerTargetBalance.toString()
-        ).sub(relayServer.workerBalanceRequired.currentValue);
+        const targetBalance = BigNumber.from(
+            relayServer.config.blockchain.workerTargetBalance
+        );
+        const refill = targetBalance.sub(
+            relayServer.workerBalanceRequired.currentValue
+        );
         log.info(
             `== replenishServer: mgr balance=${managerEthBalance.toString()}
         \n${
@@ -68,27 +70,31 @@ async function defaultReplenishFunction(
         if (
             refill.lt(
                 managerEthBalance.sub(
-                    toBN(relayServer.config.managerMinBalance)
+                    relayServer.config.blockchain.managerMinBalance
                 )
             )
         ) {
             log.info('Replenishing worker balance by manager rbtc balance');
+            const gasLimit = BigNumber.from(
+                defaultEnvironment?.mintxgascost ?? 21000
+            );
             const details: SendTransactionDetails = {
                 signer: relayServer.managerAddress,
                 serverAction: ServerAction.VALUE_TRANSFER,
                 destination: relayServer.workerAddress,
-                value: toHex(refill),
+                value: refill,
                 creationBlockNumber: currentBlock,
-                gasLimit: defaultEnvironment.mintxgascost
+                gasLimit
             };
-            const { transactionHash } =
+            const { txHash } =
                 await relayServer.transactionManager.sendTransaction(details);
-            transactionHashes.push(transactionHash);
+            transactionHashes.push(txHash);
         } else {
             const message = `== replenishServer: can't replenish: mgr balance too low ${managerEthBalance.toString()} refill=${refill.toString()}`;
             relayServer.emit('fundingNeeded', message);
             log.info(message);
         }
     }
+
     return transactionHashes;
 }

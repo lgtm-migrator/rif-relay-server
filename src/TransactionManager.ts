@@ -1,10 +1,13 @@
 import chalk from 'chalk';
 import log from 'loglevel';
 import { Mutex } from 'async-mutex';
-import { ContractInteractor } from '@rsksmart/rif-relay-common';
-import { TxStoreManager } from './TxStoreManager';
-import { KeyManager } from './KeyManager';
-import { ServerDependencies, ServerConfigParams } from './ServerConfigParams';
+import type { ContractInteractor } from '@rsksmart/rif-relay-common';
+import type { TxStoreManager } from './TxStoreManager';
+import type { KeyManager } from './KeyManager';
+import type {
+    ServerDependencies,
+    ServerConfigParams
+} from './ServerConfigParams';
 import {
     createStoredTransaction,
     ServerAction,
@@ -12,23 +15,29 @@ import {
     StoredTransactionMetadata
 } from './StoredTransaction';
 
-import { UnsignedTransaction, Transaction, utils, BigNumber, ContractFunction } from 'ethers';
-import { TransactionReceipt, TransactionResponse } from '@ethersproject/providers';
-
+import {
+    utils,
+    BigNumber,
+    PopulatedTransaction,
+    UnsignedTransaction,
+    FixedNumber,
+    constants
+} from 'ethers';
+import type { TransactionResponse } from '@ethersproject/providers';
 
 export interface SignedTransactionDetails {
-    transactionHash: string;
+    txHash: string;
     signedTx: string;
 }
 
 export interface SendTransactionDetails {
     signer: string;
     serverAction: ServerAction;
-    method?: any;
+    method?: PopulatedTransaction;
     destination: string;
-    value?: string;
-    gasLimit: number;
-    gasPrice?: string;
+    value?: BigNumber;
+    gasLimit: BigNumber;
+    gasPrice?: BigNumber;
     creationBlockNumber: number;
 }
 
@@ -59,17 +68,8 @@ export class TransactionManager {
     _initNonces(): void {
         const managerAddress = this.managerKeyManager.getAddress(0);
         // todo: initialize nonces for all signers (currently one manager, one worker)
-        this.nonces[managerAddress] = 0;
-        this.nonces[this.workersKeyManager.getAddress(0)] = 0;
-    }
-
-    async _init(): Promise<void> {
-        this.rawTxOptions = this.contractInteractor.getRawTxOptions();
-        if (this.rawTxOptions == null) {
-            throw new Error(
-                '_init failed for TransactionManager, was ContractInteractor properly initialized?'
-            );
-        }
+        this.nonces[managerAddress as string] = 0;
+        this.nonces[this.workersKeyManager.getAddress(0) as string] = 0;
     }
 
     printBoostedTransactionLog(
@@ -78,7 +78,10 @@ export class TransactionManager {
         gasPrice: number,
         isMaxGasPriceReached: boolean
     ): void {
-        const gasPriceHumanReadableOld: string = utils.formatUnits(BigNumber.from(gasPrice), 'gwei');
+        const gasPriceHumanReadableOld: string = utils.formatUnits(
+            BigNumber.from(gasPrice),
+            'gwei'
+        );
         log.info(`Boosting stale transaction:
 hash         | ${txHash}
 gasPrice     | ${gasPrice} (${gasPriceHumanReadableOld} gwei) ${
@@ -88,80 +91,103 @@ created at   | block #${creationBlockNumber}
 `);
     }
 
-    printSendTransactionLog(transaction: Transaction, from: string): void {
-        const valueHumanReadable: string = utils.formatEther(transaction.value);
-        const gasPriceHumanReadable: string = utils.formatUnits(transaction.gasPrice, 'gwei');
+    printSendTransactionLog(
+        transaction: UnsignedTransaction,
+        from: string
+    ): void {
+        const valueHumanReadable: string = utils.formatEther(
+            transaction.value ?? ''
+        );
+        const gasPriceHumanReadable: string = utils.formatUnits(
+            transaction.gasPrice?.toString() ?? '',
+            'gwei'
+        );
         log.info(`Broadcasting transaction:
-hash         | 0x${transaction.hash}
 from         | ${from}
-to           | 0x${transaction.to}
-value        | ${transaction.value.toString()} (${valueHumanReadable} RBTC)
-nonce        | ${transaction.nonce}
-gasPrice     | ${transaction.gasPrice.toString()} (${gasPriceHumanReadable} gwei)
-gasLimit     | ${parseInt('0x' + transaction.gasLimit.toString('hex'))}
-data         | 0x${transaction.data}
+to           | 0x${transaction.to ?? ''}
+value        | ${
+            transaction.value?.toString() ?? ''
+        } (${valueHumanReadable} RBTC)
+nonce        | ${transaction.nonce ?? 0}
+gasPrice     | ${
+            transaction.gasPrice?.toString() ?? ''
+        } (${gasPriceHumanReadable} gwei)
+gasLimit     | ${transaction.gasLimit?.toString() ?? ''}
+data         | 0x${transaction.data as string}
 `);
     }
 
     async attemptEstimateGas(
         methodName: string,
-        method: ContractFunction,
+        transaction: PopulatedTransaction,
         from: string
-    ): Promise<number> {
+    ): Promise<BigNumber> {
         try {
-            const estimateGas = await method.estimateGas({ from });
-            return Math.round(
-                parseInt(estimateGas) * this.config.estimateGasFactor
+            const estimateGas =
+                await this.contractInteractor.provider.estimateGas({
+                    ...transaction,
+                    from
+                });
+            const fixedEstimateGas = FixedNumber.from(estimateGas);
+            const fixedEstimateGasFactor = FixedNumber.from(
+                this.config.blockchain.estimateGasFactor
             );
+            const mul = fixedEstimateGasFactor.mulUnsafe(fixedEstimateGas);
+            const gasLimit = BigNumber.from(mul.round().toFormat('fixed128x0'));
+
+            return gasLimit;
         } catch (e) {
             if (e instanceof Error) {
                 log.error(
-                    `Failed to estimate gas for method ${methodName}\n. Using default ${this.config.defaultGasLimit}`,
+                    `Failed to estimate gas for method ${methodName}\n. Using default ${this.config.blockchain.defaultGasLimit.toString()}`,
                     e.message
                 );
             } else {
                 log.error(e);
             }
         }
-        return this.config.defaultGasLimit;
+
+        return this.config.blockchain.defaultGasLimit;
     }
 
     async sendTransaction({
         signer,
         method,
         destination,
-        value = '0x',
+        value = constants.Zero,
         gasLimit,
         gasPrice,
         creationBlockNumber,
         serverAction
     }: SendTransactionDetails): Promise<SignedTransactionDetails> {
-        const encodedCall = method?.encodeABI() ?? '0x';
-        const _gasPrice = parseInt(
-            gasPrice ?? (await this.contractInteractor.getGasPrice())
-        );
+        const tempGasPrice =
+            await this.contractInteractor.provider.getGasPrice();
+
         const releaseMutex = await this.nonceMutex.acquire();
-        let signedTx;
+        let signedTransaction: SignedTransactionDetails;
         let storedTx: StoredTransaction;
         try {
             const nonce = await this.pollNonce(signer);
-            const txToSign = new UnsignedTransaction(
-                {
-                    to: destination,
-                    value: value,
-                    gasLimit,
-                    gasPrice: _gasPrice,
-                    data: Buffer.from(encodedCall.slice(2), 'hex'),
-                    nonce
-                },
-                this.rawTxOptions
-            );
+
+            //TO-DO check what is the best approach
+            const txToSign = {
+                ...method,
+                to: destination,
+                value,
+                gasLimit,
+                gasPrice: gasPrice ?? tempGasPrice,
+                nonce
+            };
             // TODO omg! do not do this!
             const keyManager = this.managerKeyManager.isSigner(signer)
                 ? this.managerKeyManager
                 : this.workersKeyManager;
-            signedTx = keyManager.signTransaction(signer, txToSign);
+            signedTransaction = await keyManager.signTransaction(
+                signer,
+                txToSign
+            );
             const metadata: StoredTransactionMetadata = {
+                txId: signedTransaction.txHash,
                 from: signer,
                 attempts: 1,
                 serverAction,
@@ -174,17 +200,18 @@ data         | 0x${transaction.data}
         } finally {
             releaseMutex();
         }
-        const transactionHash =
-            await this.contractInteractor.broadcastTransaction(signedTx);
-        if (transactionHash.toLowerCase() !== storedTx.txId.toLowerCase()) {
+
+        const transaction = await this.contractInteractor.broadcastTransaction(
+            signedTransaction.signedTx
+        );
+
+        if (transaction.hash.toLowerCase() !== storedTx.txId.toLowerCase()) {
             throw new Error(
-                `txhash mismatch: from receipt: ${transactionHash} from txstore:${storedTx.txId}`
+                `txhash mismatch: from receipt: ${transaction.hash} from txstore:${storedTx.txId}`
             );
         }
-        return {
-            transactionHash,
-            signedTx
-        };
+
+        return signedTransaction;
     }
 
     async updateTransactionWithMinedBlock(
@@ -198,11 +225,13 @@ data         | 0x${transaction.data}
     }
 
     async updateTransactionWithAttempt(
-        txToSign: Transaction,
+        txId: string,
+        txToSign: PopulatedTransaction,
         tx: StoredTransaction,
         currentBlock: number
     ): Promise<StoredTransaction> {
         const metadata: StoredTransactionMetadata = {
+            txId,
             attempts: tx.attempts + 1,
             boostBlockNumber: currentBlock,
             from: tx.from,
@@ -212,32 +241,31 @@ data         | 0x${transaction.data}
         };
         const storedTx = createStoredTransaction(txToSign, metadata);
         await this.txStoreManager.putTx(storedTx, true);
+
         return storedTx;
     }
 
     async resendTransaction(
         tx: StoredTransaction,
         currentBlock: number,
-        newGasPrice: number,
+        newGasPrice: BigNumber,
         isMaxGasPriceReached: boolean
     ): Promise<SignedTransactionDetails> {
         // Resend transaction with exactly the same values except for gas price
-        const txToSign = new Transaction(
-            {
-                to: tx.to,
-                gasLimit: tx.gas,
-                gasPrice: newGasPrice,
-                data: tx.data,
-                nonce: tx.nonce
-            },
-            this.rawTxOptions
-        );
+        const txToSign = {
+            ...tx,
+            gasPrice: newGasPrice
+        } as PopulatedTransaction;
 
         const keyManager = this.managerKeyManager.isSigner(tx.from)
             ? this.managerKeyManager
             : this.workersKeyManager;
-        const signedTx = keyManager.signTransaction(tx.from, txToSign);
+        const signedTransaction = await keyManager.signTransaction(
+            tx.from,
+            txToSign
+        );
         const storedTx = await this.updateTransactionWithAttempt(
+            signedTransaction.txHash,
             txToSign,
             tx,
             currentBlock
@@ -246,7 +274,7 @@ data         | 0x${transaction.data}
         this.printBoostedTransactionLog(
             tx.txId,
             tx.creationBlockNumber,
-            tx.gasPrice,
+            Number(tx.gasPrice),
             isMaxGasPriceReached
         );
         this.printSendTransactionLog(txToSign, tx.from);
@@ -254,31 +282,38 @@ data         | 0x${transaction.data}
             tx.from
         );
         log.debug(`Current account nonce for ${tx.from} is ${currentNonce}`);
-        const transactionHash =
-            await this.contractInteractor.broadcastTransaction(signedTx);
-        if (transactionHash.toLowerCase() !== storedTx.txId.toLowerCase()) {
+        const transaction = await this.contractInteractor.broadcastTransaction(
+            signedTransaction.signedTx
+        );
+        if (transaction.hash.toLowerCase() !== storedTx.txId.toLowerCase()) {
             throw new Error(
-                `txhash mismatch: from receipt: ${transactionHash} from txstore:${storedTx.txId}`
+                `txhash mismatch: from receipt: ${transaction.hash} from txstore:${storedTx.txId}`
             );
         }
-        
-        return {
-            transactionHash,
-            signedTx
-        };
+
+        return signedTransaction;
     }
 
-    _resolveNewGasPrice(oldGasPrice: number): {
-        newGasPrice: number;
+    _resolveNewGasPrice(oldGasPrice: BigNumber): {
+        newGasPrice: BigNumber;
         isMaxGasPriceReached: boolean;
     } {
         let isMaxGasPriceReached = false;
-        let newGasPrice = oldGasPrice * this.config.retryGasPriceFactor;
-        // TODO: use BN for RBTC values
+        const fixedRetryGas = FixedNumber.from(
+            this.config.blockchain.retryGasPriceFactor
+        );
+        const fixedOldGasPrice = FixedNumber.from(oldGasPrice);
+
+        const fixedNewGasPrice = fixedRetryGas.mulUnsafe(fixedOldGasPrice);
+        let newGasPrice = BigNumber.from(
+            fixedNewGasPrice.round().toFormat('fixed128x0')
+        );
+        const maxGasPrice = BigNumber.from(this.config.blockchain.maxGasPrice);
+
         // Sanity check to ensure we are not burning all our balance in gas fees
-        if (newGasPrice > parseInt(this.config.maxGasPrice)) {
+        if (newGasPrice.gt(maxGasPrice)) {
             isMaxGasPriceReached = true;
-            newGasPrice = parseInt(this.config.maxGasPrice);
+            newGasPrice = maxGasPrice;
         }
 
         return { newGasPrice, isMaxGasPriceReached };
@@ -289,18 +324,23 @@ data         | 0x${transaction.data}
             signer,
             'pending'
         );
-        if (nonce > this.nonces[signer]) {
-            log.warn(
-                'NONCE FIX for signer=',
-                signer,
-                ': nonce=',
-                nonce,
-                this.nonces[signer]
-            );
-            this.nonces[signer] = nonce;
+        const nonceSigner = this.nonces[signer];
+        if (nonceSigner) {
+            if (nonce > nonceSigner) {
+                log.warn(
+                    'NONCE FIX for signer=',
+                    signer,
+                    ': nonce=',
+                    nonce,
+                    this.nonces[signer]
+                );
+                this.nonces[signer] = nonce;
+            }
+
+            return nonceSigner;
         }
 
-        return this.nonces[signer];
+        return 0;
     }
 
     async removeConfirmedTransactions(blockNumber: number): Promise<void> {
@@ -317,11 +357,12 @@ data         | 0x${transaction.data}
             const shouldRecheck =
                 transaction.minedBlockNumber == null ||
                 blockNumber - transaction.minedBlockNumber >=
-                    this.config.confirmationsNeeded;
+                    this.config.blockchain.confirmationsNeeded;
             if (shouldRecheck) {
-                const receipt: TransactionResponse = await this.contractInteractor.getTransaction(
-                    transaction.txId
-                );
+                const receipt: TransactionResponse =
+                    await this.contractInteractor.getTransaction(
+                        transaction.txId
+                    );
                 if (receipt == null) {
                     log.warn(
                         `warning: failed to fetch receipt for tx ${transaction.txId}`
@@ -341,7 +382,10 @@ data         | 0x${transaction.data}
                             `transaction ${transaction.txId} was moved between blocks`
                         );
                     }
-                    if (confirmations < this.config.confirmationsNeeded) {
+                    if (
+                        confirmations <
+                        this.config.blockchain.confirmationsNeeded
+                    ) {
                         log.debug(
                             `Tx ${transaction.txId} was mined but only has ${confirmations} confirmations`
                         );
@@ -372,10 +416,7 @@ data         | 0x${transaction.data}
         signer: string,
         currentBlockHeight: number
     ): Promise<Map<string, SignedTransactionDetails>> {
-        const boostedTransactions = new Map<
-            string,
-            SignedTransactionDetails
-        >();
+        const boostedTransactions = new Map<string, SignedTransactionDetails>();
 
         // Load unconfirmed transactions from store again
         const sortedTxs = await this.txStoreManager.getAllBySigner(signer);
@@ -385,54 +426,57 @@ data         | 0x${transaction.data}
         // Check if the tx was mined by comparing its nonce against the latest one
         const nonce = await this.contractInteractor.getTransactionCount(signer);
         const oldestPendingTx = sortedTxs[0];
-        if (oldestPendingTx.nonce < nonce) {
-            log.debug(
-                `${signer} : transaction is mined, awaiting confirmations. Account nonce: ${nonce}, oldest transaction: nonce: ${oldestPendingTx.nonce} txId: ${oldestPendingTx.txId}`
-            );
-
-            return boostedTransactions;
-        }
-
-        const lastSentAtBlockHeight =
-            oldestPendingTx.boostBlockNumber ??
-            oldestPendingTx.creationBlockNumber;
-        // If the tx is still pending, check how long ago we sent it, and resend it if needed
-        if (
-            currentBlockHeight - lastSentAtBlockHeight <
-            this.config.pendingTransactionTimeoutBlocks
-        ) {
-            log.debug(
-                `${signer} : awaiting transaction with ID: ${oldestPendingTx.txId} to be mined. creationBlockNumber: ${oldestPendingTx.creationBlockNumber} nonce: ${nonce}`
-            );
-
-            return boostedTransactions;
-        }
-
-        // Calculate new gas price as a % increase over the previous one
-        const { newGasPrice, isMaxGasPriceReached } = this._resolveNewGasPrice(
-            oldestPendingTx.gasPrice
-        );
-        const underpricedTransactions = sortedTxs.filter(
-            (it) => it.gasPrice < newGasPrice
-        );
-        for (const transaction of underpricedTransactions) {
-            const boostedTransactionDetails = await this.resendTransaction(
-                transaction,
-                currentBlockHeight,
-                newGasPrice,
-                isMaxGasPriceReached
-            );
-            boostedTransactions.set(
-                transaction.txId,
-                boostedTransactionDetails
-            );
-            log.debug(
-                `Replaced transaction: nonce: ${transaction.nonce} sender: ${signer} | ${transaction.txId} => ${boostedTransactionDetails.transactionHash}`
-            );
-            if (transaction.attempts > 2) {
+        if (oldestPendingTx) {
+            if (oldestPendingTx.nonce < nonce) {
                 log.debug(
-                    `resend ${signer}: Sent tx ${transaction.attempts} times already`
+                    `${signer} : transaction is mined, awaiting confirmations. Account nonce: ${nonce}, oldest transaction: nonce: ${oldestPendingTx.nonce} txId: ${oldestPendingTx.txId}`
                 );
+
+                return boostedTransactions;
+            }
+
+            const lastSentAtBlockHeight =
+                oldestPendingTx.boostBlockNumber ??
+                oldestPendingTx.creationBlockNumber;
+            // If the tx is still pending, check how long ago we sent it, and resend it if needed
+            if (
+                currentBlockHeight - lastSentAtBlockHeight <
+                this.config.blockchain.pendingTransactionTimeoutBlocks
+            ) {
+                log.debug(
+                    `${signer} : awaiting transaction with ID: ${oldestPendingTx.txId} to be mined. creationBlockNumber: ${oldestPendingTx.creationBlockNumber} nonce: ${nonce}`
+                );
+
+                return boostedTransactions;
+            }
+
+            // Calculate new gas price as a % increase over the previous one
+            const { newGasPrice, isMaxGasPriceReached } =
+                this._resolveNewGasPrice(oldestPendingTx.gasPrice);
+
+            //TO-DO check if there is no issue with the type conversion
+            const underpricedTransactions = sortedTxs.filter(
+                (it) => it.gasPrice < newGasPrice
+            );
+            for (const transaction of underpricedTransactions) {
+                const boostedTransactionDetails = await this.resendTransaction(
+                    transaction,
+                    currentBlockHeight,
+                    newGasPrice,
+                    isMaxGasPriceReached
+                );
+                boostedTransactions.set(
+                    transaction.txId,
+                    boostedTransactionDetails
+                );
+                log.debug(
+                    `Replaced transaction: nonce: ${transaction.nonce} sender: ${signer} | ${transaction.txId} => ${boostedTransactionDetails.txHash}`
+                );
+                if (transaction.attempts > 2) {
+                    log.debug(
+                        `resend ${signer}: Sent tx ${transaction.attempts} times already`
+                    );
+                }
             }
         }
 
