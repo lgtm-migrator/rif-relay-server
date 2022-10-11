@@ -6,10 +6,6 @@ import type { Server } from 'http';
 import log from 'loglevel';
 import configureDocumentation from './DocConfiguration';
 import type { RelayServer } from './RelayServer';
-import type {
-    DeployTransactionRequest,
-    RelayTransactionRequest
-} from '@rsksmart/rif-relay-common';
 
 export type RootHandlerRequest = Request & {
     body?: {
@@ -47,39 +43,47 @@ export const AVAILABLE_METHODS: Array<WhitelistedRelayMethod> = [
 type AvailableRelayMethods = RelayServer[WhitelistedRelayMethod];
 
 type AvailableRelayMethodParameters = Parameters<AvailableRelayMethods>;
+
 export class HttpServer {
-    app: Express;
 
-    private serverInstance?: Server;
+    private _app: Express;
 
-    constructor(private readonly port: number, readonly backend: RelayServer) {
-        this.app = express();
-        this.app.use(cors());
+    private _serverInstance?: Server;
 
-        this.app.use(bodyParser.urlencoded({ extended: false }));
-        this.app.use(bodyParser.json());
+    private _port: number;
+
+    private _relayServer: RelayServer;
+
+    constructor(port: number, relayServer: RelayServer) {
+        this._port = port;
+        this._relayServer = relayServer;
+        this._app = express();
+        this._app.use(cors());
+
+        this._app.use(bodyParser.urlencoded({ extended: false }));
+        this._app.use(bodyParser.json());
         /* eslint-disable @typescript-eslint/no-misused-promises */
-        this.app.post('/', this.rootHandler.bind(this));
-        this.app.get('/getaddr', this.pingHandler.bind(this));
-        this.app.get('/status', this.statusHandler.bind(this));
-        this.app.get('/tokens', this.tokenHandler.bind(this));
-        this.app.get('/verifiers', this.verifierHandler.bind(this));
-        this.app.post('/relay', this.relayHandler.bind(this));
-        configureDocumentation(this.app, backend.config.app.url);
-        this.backend.once('removed', this.stop.bind(this));
-        this.backend.once('unstaked', this.close.bind(this));
+        this._app.post('/', this.rootHandler.bind(this));
+        this._app.get('/getaddr', this.pingHandler.bind(this));
+        this._app.get('/status', this.statusHandler.bind(this));
+        this._app.get('/tokens', this.tokenHandler.bind(this));
+        this._app.get('/verifiers', this.verifierHandler.bind(this));
+        this._app.post('/relay', this.relayHandler.bind(this));
+        configureDocumentation(this._app, this._relayServer.config.app.url);
+        this._relayServer.once('removed', this.stop.bind(this));
+        this._relayServer.once('unstaked', this.close.bind(this));
         /* eslint-enable */
-        this.backend.on('error', (e) => {
+        this._relayServer.on('error', (e) => {
             log.error('httpServer:', e);
         });
     }
 
     start(): void {
-        if (this.serverInstance === undefined) {
-            this.serverInstance = this.app.listen(this.port, () => {
+        if (this._serverInstance === undefined) {
+            this._serverInstance = this._app.listen(this._port, () => {
                 // We need to be sure that this line is always printed
                 // because the tests wait for it to be logged.
-                const args = ['Listening on port', this.port];
+                const args = ['Listening on port', this._port];
                 console.log(...args);
                 log.info(...args);
                 this.startBackend();
@@ -89,20 +93,20 @@ export class HttpServer {
 
     startBackend(): void {
         try {
-            this.backend.start();
+            this._relayServer.start();
         } catch (e) {
             log.error('relay task error', e);
         }
     }
 
     stop(): void {
-        this.serverInstance?.close();
+        this._serverInstance?.close();
         log.info('Http server stopped.\nShutting down relay...');
     }
 
     close(): void {
         log.info('Stopping relay worker...');
-        this.backend.stop();
+        this._relayServer.stop();
     }
 
     // TODO: use this when changing to jsonrpc
@@ -152,7 +156,7 @@ export class HttpServer {
         }
 
         return (
-            this.backend[method] as (
+            this._relayServer[method] as (
                 ...args: AvailableRelayMethodParameters[number][]
             ) => ReturnType<AvailableRelayMethods>
         )(...params);
@@ -174,11 +178,10 @@ export class HttpServer {
      */
     pingHandler(_req: Request, res: Response): void {
         try {
-            const pingResponse = this.backend.pingHandler();
+            const pingResponse = this._relayServer.pingHandler();
             res.send(pingResponse);
             log.info(
-                `address ${pingResponse.relayWorkerAddress} sent. ready: ${
-                    pingResponse.ready ? 'true' : 'false'
+                `address ${pingResponse.relayWorkerAddress} sent. ready: ${pingResponse.ready ? 'true' : 'false'
                 }`
             );
         } catch (e) {
@@ -249,9 +252,7 @@ export class HttpServer {
     async relayHandler({ body }: Request, res: Response): Promise<void> {
         try {
             const { signedTx, txHash } =
-                await this.backend.createRelayTransaction(
-                    body as RelayTransactionRequest | DeployTransactionRequest
-                );
+                await this._relayServer.createRelayTransaction(body);
             res.send({ signedTx, txHash });
         } catch (e) {
             if (e instanceof Error) {
@@ -297,7 +298,7 @@ export class HttpServer {
     async tokenHandler(req: Request, res: Response): Promise<void> {
         try {
             const verifier = req.query['verifier'] as string;
-            const tokenResponse = await this.backend.tokenHandler(verifier);
+            const tokenResponse = await this._relayServer.tokenHandler(verifier);
             res.send(tokenResponse);
         } catch (e) {
             if (e instanceof Error) {
@@ -334,7 +335,7 @@ export class HttpServer {
      */
     verifierHandler(_: Request, res: Response): void {
         try {
-            const verifierResponse = this.backend.verifierHandler();
+            const verifierResponse = this._relayServer.verifierHandler();
             res.send(verifierResponse);
         } catch (e) {
             if (e instanceof Error) {

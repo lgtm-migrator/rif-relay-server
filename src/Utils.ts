@@ -1,6 +1,6 @@
 import { utils } from 'ethers';
 import chalk from 'chalk';
-import type { TypedEvent } from '@rsksmart/rif-relay-contracts/dist/typechain-types/common';
+import type { TypedEvent } from '@rsksmart/rif-relay-contracts/typechain-types/common';
 import type { IRelayHub } from '@rsksmart/rif-relay-contracts/typechain-types';
 import type { AppConfig } from './ServerConfigParams';
 

@@ -47,6 +47,8 @@ export function createStoredTransaction(
     tx: PopulatedTransaction,
     metadata: StoredTransactionMetadata
 ): StoredTransaction {
+
+    //TODO check what to do if the gasLimit and gasPrice its zero
     const details: StoredTransactionSerialized = {
         to: tx.to,
         gasLimit: tx.gasLimit!,

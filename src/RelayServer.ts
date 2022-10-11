@@ -5,8 +5,7 @@ import {
     IDeployVerifier__factory,
     IRelayVerifier__factory,
     IDeployVerifier,
-    IRelayVerifier,
-    RelayHub
+    IRelayVerifier
 } from '@rsksmart/rif-relay-contracts/typechain-types';
 import type { EnvelopingTypes } from '@rsksmart/rif-relay-contracts/typechain-types/contracts/RelayHub';
 import {
@@ -75,13 +74,13 @@ export type VerifierResponse = {
 };
 
 export class RelayServer extends EventEmitter {
-    lastScannedBlock = 0;
+    private lastScannedBlock = 0;
 
-    lastRefreshBlock = 0;
+    private lastRefreshBlock = 0;
 
-    ready = false;
+    private ready = false;
 
-    lastSuccessfulRounds = Number.MAX_SAFE_INTEGER;
+    private lastSuccessfulRounds = Number.MAX_SAFE_INTEGER;
 
     readonly managerAddress: string;
 
@@ -91,17 +90,17 @@ export class RelayServer extends EventEmitter {
 
     _workerSemaphoreOn = false;
 
-    alerted = false;
+    private alerted = false;
 
     alertedBlock = 0;
 
-    private initialized = false;
+    private _initialized = false;
 
     readonly contractInteractor: ContractInteractor;
 
     // private readonly versionManager: VersionsManager;
 
-    private workerTask?: Timeout;
+    private _workerTask?: Timeout;
 
     config: ServerConfigParams;
 
@@ -113,11 +112,9 @@ export class RelayServer extends EventEmitter {
 
     registrationManager!: RegistrationManager;
 
-    chainId!: number;
+    chainId: number | undefined;
 
-    networkId!: number;
-
-    relayHubContract!: RelayHub;
+    networkId: number | undefined;
 
     trustedVerifiers: Set<string | undefined> = new Set<string | undefined>();
 
@@ -175,10 +172,10 @@ export class RelayServer extends EventEmitter {
         return {
             relayWorkerAddress: this.workerAddress,
             relayManagerAddress: this.managerAddress,
-            relayHubAddress: this.relayHubContract.address ?? '',
+            relayHubAddress: this.contractInteractor.relayHub.address,
             minGasPrice: this.getMinGasPrice().toString(),
-            chainId: this.chainId.toString(),
-            networkId: this.networkId.toString(),
+            chainId: this.chainId?.toString(),
+            networkId: this.networkId?.toString(),
             ready: this.isReady() ?? false,
             version: VERSION
         };
@@ -245,10 +242,10 @@ export class RelayServer extends EventEmitter {
         // Check that the relayHub is the correct one
         if (
             req.metadata.relayHubAddress.toLowerCase() !==
-            this.relayHubContract.address.toLowerCase()
+            this.contractInteractor.relayHub.address.toLowerCase()
         ) {
             throw new Error(
-                `Wrong hub address.\nRelay server's hub address: ${this.relayHubContract.address}, request's hub address: ${req.metadata.relayHubAddress}\n`
+                `Wrong hub address.\nRelay server's hub address: ${this.contractInteractor.relayHub.address}, request's hub address: ${req.metadata.relayHubAddress}\n`
             );
         }
 
@@ -393,19 +390,20 @@ export class RelayServer extends EventEmitter {
         }
 
         try {
+            let verifyMethod: PopulatedTransaction;
             if (this.isDeployRequest(req)) {
-                await (verifierContract as IRelayVerifier).verifyRelayedCall(
+                verifyMethod = await (verifierContract as IRelayVerifier).populateTransaction.verifyRelayedCall(
                     (req as RelayTransactionRequest).relayRequest,
                     req.metadata.signature,
                     { from: this.workerAddress }
                 );
             } else {
-                await (verifierContract as IDeployVerifier).verifyRelayedCall(
+                verifyMethod = await (verifierContract as IDeployVerifier).populateTransaction.verifyRelayedCall(
                     (req as DeployTransactionRequest).relayRequest,
-                    req.metadata.signature,
-                    { from: this.workerAddress }
+                    req.metadata.signature
                 );
             }
+            await this.contractInteractor.provider.call(verifyMethod, 'pending');
         } catch (e) {
             const error = e as Error;
             throw new Error(
@@ -471,11 +469,11 @@ export class RelayServer extends EventEmitter {
         const isDeploy = this.isDeployRequest(req);
 
         const method = isDeploy
-            ? await this.relayHubContract.populateTransaction.deployCall(
+            ? await this.contractInteractor.relayHub.populateTransaction.deployCall(
                   req.relayRequest as EnvelopingTypes.DeployRequestStruct,
                   req.metadata.signature
               )
-            : await this.relayHubContract.populateTransaction.relayCall(
+            : await this.contractInteractor.relayHub.populateTransaction.relayCall(
                   req.relayRequest as EnvelopingTypes.RelayRequestStruct,
                   req.metadata.signature
               );
@@ -544,7 +542,7 @@ export class RelayServer extends EventEmitter {
         log.debug(
             `Started polling for new blocks every ${this.config.app.checkInterval}ms`
         );
-        this.workerTask = setInterval(
+        this._workerTask = setInterval(
             // eslint-disable-next-line @typescript-eslint/no-misused-promises
             this.intervalHandler.bind(this),
             this.config.app.checkInterval
@@ -552,10 +550,10 @@ export class RelayServer extends EventEmitter {
     }
 
     stop(): void {
-        if (this.workerTask == null) {
+        if (this._workerTask == null) {
             throw new Error('Server not started');
         }
-        clearInterval(this.workerTask);
+        clearInterval(this._workerTask);
         log.info('Successfully stopped polling!!');
     }
 
@@ -627,14 +625,13 @@ export class RelayServer extends EventEmitter {
     }
 
     async init(): Promise<void> {
-        if (this.initialized) {
+        if (this._initialized) {
             throw new Error('_init was already called');
         }
         log.debug('Relay Server - Relay Server initializing');
         log.debug('Relay Server - Transaction Manager initialized');
         this._initTrustedVerifiers(this.config.contracts.trustedVerifiers);
-        this.relayHubContract = this.contractInteractor.relayHub;
-        const relayHubAddress = this.relayHubContract.address;
+        const relayHubAddress = this.contractInteractor.relayHub.address;
         log.debug(`Relay Server - Relay hub: ${relayHubAddress}`);
         const code = await this.contractInteractor.isContractDeployed(
             relayHubAddress
@@ -675,7 +672,7 @@ networkId               | ${this.networkId}
 latestBlock             | ${latestBlock.number}
 latestBlock timestamp   | ${latestBlock.timestamp}
 `);
-        this.initialized = true;
+        this._initialized = true;
 
         // Assume started server is not registered until _worker figures stuff out
         this.registrationManager.printNotRegisteredMessage();
@@ -696,7 +693,7 @@ latestBlock timestamp   | ${latestBlock.timestamp}
     }
 
     async _worker(blockNumber: number): Promise<string[]> {
-        if (!this.initialized) {
+        if (!this._initialized) {
             await this.init();
         }
         if (blockNumber <= this.lastScannedBlock) {
@@ -937,7 +934,7 @@ latestBlock timestamp   | ${latestBlock.timestamp}
 
     async _queryLatestActiveEvent(): Promise<TypedEvent | undefined> {
         const events: Array<Array<TypedEvent>> =
-            // TO-DO the topic is still missing, I need to figure it out
+            // TODO the topic is still missing, I need to figure it out
             await this.contractInteractor.getPastEventsForHub({
                 fromBlock: 1
             });

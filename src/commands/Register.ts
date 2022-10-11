@@ -1,16 +1,19 @@
-import { CommandClient } from './helpers/CommandClient';
+import log from 'loglevel';
+import { BigNumber, utils, constants, Signer } from 'ethers';
+import type { JsonRpcProvider } from '@ethersproject/providers';
+import { default as configuration } from 'config';
+
 import type { EnvelopingConfig } from '@rsksmart/rif-relay-common';
 import { configure } from '@rsksmart/rif-relay-client';
+
 import type {
     AppConfig,
     BlockchainConfig,
     ContractsConfig
 } from '../ServerConfigParams';
-import log from 'loglevel';
-import { BigNumber, utils, constants, Signer } from 'ethers';
-import type { JsonRpcProvider } from '@ethersproject/providers';
+
+import { CommandClient } from './helpers/CommandClient';
 import { isSameAddress } from '../Utils';
-import { default as configuration } from 'config';
 
 export interface RegisterOptions {
     hub: string;
@@ -31,7 +34,7 @@ export class Register extends CommandClient {
         const transactions: string[] = [];
         log.info(`Registering Enveloping relayer at ${options.relayUrl}`);
         log.info('Options received:', options);
-        const response = await this.httpClient.getPingResponse(
+        const response = await this._httpClient.getPingResponse(
             options.relayUrl
         );
         if (response.ready) {
@@ -41,7 +44,7 @@ export class Register extends CommandClient {
         await this.initContractInteractor();
 
         const { chainId } = await (
-            this.provider as JsonRpcProvider
+            this._provider as JsonRpcProvider
         ).getNetwork();
 
         if (response.chainId !== chainId.toString()) {
@@ -54,11 +57,11 @@ export class Register extends CommandClient {
 
         const relayAddress = response.relayManagerAddress;
         const { stake, unstakeDelay, owner } =
-            await this.contractInteractor!.getStakeInfo(relayAddress);
+            await this._contractInteractor.getStakeInfo(relayAddress);
 
         log.info('Current stake info:');
         log.info('Relayer owner: ', owner);
-        log.info('Current unstake delay: ', unstakeDelay);
+        log.info('Current unstake delay: ', unstakeDelay.toString());
         log.info(
             'current stake=',
             utils.formatUnits(stake.toString(), 'ether')
@@ -86,7 +89,7 @@ export class Register extends CommandClient {
                     : ` (already has ${utils.formatUnits(stake, 'ether')} RBTC)`
             );
 
-            const stakeTx = await this.contractInteractor?.relayHub
+            const stakeTx = await this._contractInteractor.relayHub
                 .connect(options.signer)
                 .stakeForAddress(
                     relayAddress,
@@ -98,14 +101,14 @@ export class Register extends CommandClient {
                     }
                 );
 
-            transactions.push(stakeTx!.hash);
+            transactions.push(stakeTx.hash);
         }
 
         if (isSameAddress(owner, from)) {
             log.info('Relayer already authorized');
         }
 
-        const bal = await this.provider.getBalance(relayAddress);
+        const bal = await this._provider.getBalance(relayAddress);
 
         if (bal.gt(options.funds)) {
             log.info('Relayer already funded');

@@ -10,11 +10,11 @@ type keystore = {
 };
 
 export class KeyManager {
-    private readonly hdkey!: utils.HDNode;
+    private readonly _hdkey!: utils.HDNode;
 
     private _privateKeys: Record<string, string> = {};
 
-    private nonces: Record<string, number> = {};
+    private _nonces: Record<string, number> = {};
 
     /**
      * @param count - # of addresses managed by this manager
@@ -47,7 +47,7 @@ export class KeyManager {
                         { flag: 'w' }
                     );
                 }
-                this.hdkey = utils.HDNode.fromSeed(genseed);
+                this._hdkey = utils.HDNode.fromSeed(genseed);
             } catch (e) {
                 if (
                     e instanceof Error &&
@@ -63,7 +63,7 @@ export class KeyManager {
             if (seed == null) {
                 seed = Wallet.createRandom().privateKey;
             }
-            this.hdkey = utils.HDNode.fromSeed(seed ?? Buffer.from(''));
+            this._hdkey = utils.HDNode.fromSeed(seed ?? Buffer.from(''));
         }
 
         this.generateKeys(count);
@@ -71,11 +71,11 @@ export class KeyManager {
 
     generateKeys(count: number): void {
         this._privateKeys = {};
-        this.nonces = {};
+        this._nonces = {};
         for (let index = 0; index < count; index++) {
-            const w = this.hdkey.derivePath(index.toString());
+            const w = this._hdkey.derivePath(index.toString());
             this._privateKeys[w.address] = w.privateKey;
-            this.nonces[index] = 0;
+            this._nonces[index] = 0;
         }
     }
 

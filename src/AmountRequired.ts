@@ -3,13 +3,13 @@ import log from 'loglevel';
 import { boolString } from './Utils';
 
 export class AmountRequired {
-    _name: string;
+    private _name: string;
 
-    _currentValue = BigNumber.from(0);
+    private _currentValue = BigNumber.from(0);
 
-    _requiredValue = BigNumber.from(0);
+    private _requiredValue = BigNumber.from(0);
 
-    _listener?: () => void;
+    private _listener?: () => void;
 
     constructor(name: string, requiredValue: BigNumber, listener?: () => void) {
         this._name = name;

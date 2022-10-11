@@ -1,12 +1,15 @@
 import log from 'loglevel';
-
 import type { EventEmitter } from 'events';
+import { BigNumber, constants } from 'ethers';
+import chalk from 'chalk';
 
 import type {
     ContractInteractor,
     ManagerEvent,
     PastEventOptions
 } from '@rsksmart/rif-relay-common';
+import type { IRelayHub } from '@rsksmart/rif-relay-contracts/typechain-types';
+import type { TypedEvent } from '@rsksmart/rif-relay-contracts/typechain-types/common';
 
 import type { ServerConfigParams } from './ServerConfigParams';
 import type {
@@ -15,18 +18,17 @@ import type {
 } from './TransactionManager';
 import type { TxStoreManager } from './TxStoreManager';
 import { ServerAction } from './StoredTransaction';
-import chalk from 'chalk';
 import { AmountRequired } from './AmountRequired';
 import { defaultEnvironment } from './Environments';
-import { BigNumber, constants } from 'ethers';
-import type { TypedEvent } from '@rsksmart/rif-relay-contracts/typechain-types/common';
+
+
 import {
     boolString,
     getLatestEventData,
     isRegistrationValid,
     isSecondEventLater
 } from './Utils';
-import type { IRelayHub } from '@rsksmart/rif-relay-contracts/typechain-types';
+import type { StakeUnlockedEvent } from '@rsksmart/rif-relay-contracts/typechain-types/contracts/RelayHub';
 
 export type RelayServerRegistryInfo = {
     url: string;
@@ -35,37 +37,46 @@ export type RelayServerRegistryInfo = {
 const mintxgascost = defaultEnvironment?.mintxgascost;
 
 export class RegistrationManager {
-    balanceRequired: AmountRequired;
 
-    stakeRequired: AmountRequired;
+    private _balanceRequired: AmountRequired;
 
-    _isStakeLocked = false;
+    public get balanceRequired(): AmountRequired {
+        return this._balanceRequired;
+    }
 
-    isInitialized = false;
+    private _stakeRequired: AmountRequired;
 
-    hubAddress: string;
+    public get stakeRequired(): AmountRequired {
+        return this._stakeRequired;
+    }
 
-    managerAddress: string;
+    private _isStakeLocked = false;
 
-    workerAddress: string;
+    private _isInitialized = false;
 
-    eventEmitter: EventEmitter;
+    private readonly _hubAddress: string;
 
-    contractInteractor: ContractInteractor;
+    private readonly _managerAddress: string;
 
-    ownerAddress?: string;
+    private readonly _workerAddress: string;
 
-    transactionManager: TransactionManager;
+    private readonly _eventEmitter: EventEmitter;
 
-    config: ServerConfigParams;
+    private readonly _contractInteractor: ContractInteractor;
 
-    txStoreManager: TxStoreManager;
+    private _ownerAddress: string | undefined;
 
-    relayData: IRelayHub.RelayManagerDataStruct | undefined;
+    private readonly _transactionManager: TransactionManager;
 
-    lastWorkerAddedTransaction?: TypedEvent;
+    private _config: ServerConfigParams;
 
-    private delayedEvents: Array<{ block: number; eventData: TypedEvent }> = [];
+    private readonly _txStoreManager: TxStoreManager;
+
+    private _relayData: IRelayHub.RelayManagerDataStruct | undefined;
+
+    private _lastWorkerAddedTransaction: TypedEvent | undefined;
+
+    private _delayedEvents: Array<{ block: number; eventData: TypedEvent }> = [];
 
     get isStakeLocked(): boolean {
         return this._isStakeLocked;
@@ -95,34 +106,34 @@ export class RegistrationManager {
         const listener = (): void => {
             this.printNotRegisteredMessage();
         };
-        this.balanceRequired = new AmountRequired(
+        this._balanceRequired = new AmountRequired(
             'Balance',
             BigNumber.from(config.blockchain.managerMinBalance),
             listener
         );
-        this.stakeRequired = new AmountRequired(
+        this._stakeRequired = new AmountRequired(
             'Stake',
             BigNumber.from(config.blockchain.managerMinStake),
             listener
         );
 
-        this.contractInteractor = contractInteractor;
-        this.hubAddress = config.contracts.relayHubAddress;
-        this.managerAddress = managerAddress;
-        this.workerAddress = workerAddress;
-        this.eventEmitter = eventEmitter;
-        this.transactionManager = transactionManager;
-        this.txStoreManager = txStoreManager;
-        this.config = config;
+        this._contractInteractor = contractInteractor;
+        this._hubAddress = config.contracts.relayHubAddress;
+        this._managerAddress = managerAddress;
+        this._workerAddress = workerAddress;
+        this._eventEmitter = eventEmitter;
+        this._transactionManager = transactionManager;
+        this._txStoreManager = txStoreManager;
+        this._config = config;
     }
 
     async init(): Promise<void> {
-        if (this.lastWorkerAddedTransaction == null) {
-            this.lastWorkerAddedTransaction =
+        if (this._lastWorkerAddedTransaction == null) {
+            this._lastWorkerAddedTransaction =
                 await this._queryLatestWorkerAddedEvent();
         }
 
-        this.isInitialized = true;
+        this._isInitialized = true;
     }
 
     async handlePastEvents(
@@ -131,7 +142,7 @@ export class RegistrationManager {
         currentBlock: number,
         forceRegistration: boolean
     ): Promise<string[]> {
-        if (!this.isInitialized) {
+        if (!this._isInitialized) {
             throw new Error('RegistrationManager not initialized');
         }
         const options = {
@@ -148,7 +159,7 @@ export class RegistrationManager {
             'StakeUnlocked',
             'StakeWithdrawn'
         ];
-        const decodedEvents = await this.contractInteractor.getPastEventsForHub(
+        const decodedEvents = await this._contractInteractor.getPastEventsForHub(
             options,
             eventsNames
         );
@@ -162,8 +173,9 @@ export class RegistrationManager {
                     break;
                 case 'StakeUnlocked':
                     await this.refreshStake();
-                    this.delayedEvents.push({
-                        block: eventData.blockNumber, // TO-DO this is not the block, we need the withdraw
+                    
+                    this._delayedEvents.push({
+                        block: (eventData as StakeUnlockedEvent).args.withdrawBlock.toNumber(),
                         eventData
                     });
                     break;
@@ -179,19 +191,19 @@ export class RegistrationManager {
             }
         }
 
-        this.relayData = await this.getRelayData();
+        this._relayData = await this.getRelayData();
 
         for (const eventData of hubEventsSinceLastScan) {
             switch (eventData.event) {
                 case 'RelayWorkersAdded':
                     if (
-                        this.lastWorkerAddedTransaction == null ||
+                        this._lastWorkerAddedTransaction == null ||
                         isSecondEventLater(
-                            this.lastWorkerAddedTransaction,
+                            this._lastWorkerAddedTransaction,
                             eventData
                         )
                     ) {
-                        this.lastWorkerAddedTransaction = eventData;
+                        this._lastWorkerAddedTransaction = eventData;
                     }
                     break;
             }
@@ -212,7 +224,7 @@ export class RegistrationManager {
         }
 
         const isRegistrationCorrect = this._isRegistrationCorrect();
-        const isRegistrationPending = await this.txStoreManager.isActionPending(
+        const isRegistrationPending = await this._txStoreManager.isActionPending(
             ServerAction.REGISTER_SERVER
         );
         if (
@@ -229,26 +241,26 @@ export class RegistrationManager {
 
     async getRelayData(): Promise<IRelayHub.RelayManagerDataStruct> {
         const relayData: IRelayHub.RelayManagerDataStruct[] =
-            await this.contractInteractor.getRelayInfo(
-                new Set<string>([this.managerAddress])
+            await this._contractInteractor.getRelayInfo(
+                new Set<string>([this._managerAddress])
             );
         if (relayData.length > 1) {
             throw new Error(
-                'More than one relay manager found for ' + this.managerAddress
+                'More than one relay manager found for ' + this._managerAddress
             );
         }
         if (relayData.length == 1 && relayData[0]) {
             return relayData[0];
         }
-        throw new Error('No relay manager found for ' + this.managerAddress);
+        throw new Error('No relay manager found for ' + this._managerAddress);
     }
 
     _extractDuePendingEvents(currentBlock: number): TypedEvent[] {
-        const ret = this.delayedEvents
+        const ret = this._delayedEvents
             .filter((event) => event.block <= currentBlock)
             .map((e) => e.eventData);
-        this.delayedEvents = [
-            ...this.delayedEvents.filter((event) => event.block > currentBlock)
+        this._delayedEvents = [
+            ...this._delayedEvents.filter((event) => event.block > currentBlock)
         ];
 
         return ret;
@@ -256,9 +268,9 @@ export class RegistrationManager {
 
     _isRegistrationCorrect(): boolean {
         return isRegistrationValid(
-            this.relayData,
-            this.config.app,
-            this.managerAddress
+            this._relayData,
+            this._config.app,
+            this._managerAddress
         );
     }
 
@@ -301,21 +313,21 @@ export class RegistrationManager {
             );
         }
 
-        this.eventEmitter.emit('unstaked');
+        this._eventEmitter.emit('unstaked');
 
         return transactionHashes;
     }
 
     async refreshBalance(): Promise<void> {
-        const currentBalance = await this.contractInteractor.getBalance(
-            this.managerAddress
+        const currentBalance = await this._contractInteractor.getBalance(
+            this._managerAddress
         );
-        this.balanceRequired.currentValue = currentBalance;
+        this._balanceRequired.currentValue = currentBalance;
     }
 
     async refreshStake(): Promise<void> {
-        const stakeInfo = await this.contractInteractor.getStakeInfo(
-            this.managerAddress
+        const stakeInfo = await this._contractInteractor.getStakeInfo(
+            this._managerAddress
         );
 
         const stake = stakeInfo.stake;
@@ -325,11 +337,11 @@ export class RegistrationManager {
 
         // a locked stake does not have the 'withdrawBlock' field set
         this.isStakeLocked = stakeInfo.withdrawBlock.eq(constants.Zero);
-        this.stakeRequired.currentValue = stake;
+        this._stakeRequired.currentValue = stake;
 
         // first time getting stake, setting owner
-        if (this.ownerAddress == null) {
-            this.ownerAddress = stakeInfo.owner;
+        if (!this._ownerAddress) {
+            this._ownerAddress = stakeInfo.owner;
             log.info('Got staked for the first time');
             this.printNotRegisteredMessage();
         }
@@ -338,23 +350,23 @@ export class RegistrationManager {
     async addRelayWorker(currentBlock: number): Promise<string> {
         // register on chain
         const addRelayWorkerMethod =
-            await this.contractInteractor.relayHub.populateTransaction.addRelayWorkers(
-                [this.workerAddress]
+            await this._contractInteractor.relayHub.populateTransaction.addRelayWorkers(
+                [this._workerAddress]
             );
-        const gasLimit = await this.transactionManager.attemptEstimateGas(
+        const gasLimit = await this._transactionManager.attemptEstimateGas(
             'AddRelayWorkers',
             addRelayWorkerMethod,
-            this.managerAddress
+            this._managerAddress
         );
         const details: SendTransactionDetails = {
-            signer: this.managerAddress,
+            signer: this._managerAddress,
             gasLimit,
             serverAction: ServerAction.ADD_WORKER,
             method: addRelayWorkerMethod,
-            destination: this.hubAddress,
+            destination: this._hubAddress,
             creationBlockNumber: currentBlock
         };
-        const { txHash } = await this.transactionManager.sendTransaction(
+        const { txHash } = await this._transactionManager.sendTransaction(
             details
         );
 
@@ -365,8 +377,8 @@ export class RegistrationManager {
     async attemptRegistration(currentBlock: number): Promise<string[]> {
         const allPrerequisitesOk =
             this.isStakeLocked &&
-            this.stakeRequired.isSatisfied &&
-            this.balanceRequired.isSatisfied;
+            this._stakeRequired.isSatisfied &&
+            this._balanceRequired.isSatisfied;
         if (!allPrerequisitesOk) {
             log.info(
                 'Not all prerequisites for registration are met yet. Registration attempt cancelled'
@@ -378,7 +390,7 @@ export class RegistrationManager {
         let transactions: string[] = [];
         // add worker only if not already added
         const workersAdded = this._isWorkerValid();
-        const addWorkersPending = await this.txStoreManager.isActionPending(
+        const addWorkersPending = await this._txStoreManager.isActionPending(
             ServerAction.ADD_WORKER
         );
         if (!(workersAdded || addWorkersPending)) {
@@ -386,35 +398,35 @@ export class RegistrationManager {
             transactions = transactions.concat(txHash);
         }
 
-        const portIncluded: boolean = this.config.app.url.indexOf(':') > 0;
+        const portIncluded: boolean = this._config.app.url.indexOf(':') > 0;
         const registerUrl =
-            this.config.app.url +
-            (!portIncluded && this.config.app.port > 0
-                ? ':' + this.config.app.port.toString()
+            this._config.app.url +
+            (!portIncluded && this._config.app.port > 0
+                ? ':' + this._config.app.port.toString()
                 : '');
         const registerMethod =
-            await this.contractInteractor.relayHub.populateTransaction.registerRelayServer(
+            await this._contractInteractor.relayHub.populateTransaction.registerRelayServer(
                 registerUrl
             );
-        const gasLimit = await this.transactionManager.attemptEstimateGas(
+        const gasLimit = await this._transactionManager.attemptEstimateGas(
             'RegisterRelay',
             registerMethod,
-            this.managerAddress
+            this._managerAddress
         );
         const details: SendTransactionDetails = {
             serverAction: ServerAction.REGISTER_SERVER,
             gasLimit,
-            signer: this.managerAddress,
+            signer: this._managerAddress,
             method: registerMethod,
-            destination: this.hubAddress,
+            destination: this._hubAddress,
             creationBlockNumber: currentBlock
         };
-        const { txHash } = await this.transactionManager.sendTransaction(
+        const { txHash } = await this._transactionManager.sendTransaction(
             details
         );
         transactions = transactions.concat(txHash);
         log.debug(
-            `Relay ${this.managerAddress} registered on hub ${this.hubAddress}. `
+            `Relay ${this._managerAddress} registered on hub ${this._hubAddress}. `
         );
 
         return transactions;
@@ -423,13 +435,13 @@ export class RegistrationManager {
     async _sendManagerEthBalanceToOwner(
         currentBlock: number
     ): Promise<string[]> {
-        const gasPrice = await this.contractInteractor.provider.getGasPrice();
+        const gasPrice = await this._contractInteractor.provider.getGasPrice();
         const transactionHashes: string[] = [];
         const gasLimit = BigNumber.from(mintxgascost);
         const txCost = gasPrice.mul(gasLimit);
 
-        const managerBalance = await this.contractInteractor.getBalance(
-            this.managerAddress
+        const managerBalance = await this._contractInteractor.getBalance(
+            this._managerAddress
         );
         const value = managerBalance.sub(txCost);
         // sending manager RBTC balance to owner
@@ -438,15 +450,15 @@ export class RegistrationManager {
                 `Sending manager RBTC balance ${managerBalance.toString()} to owner`
             );
             const details: SendTransactionDetails = {
-                signer: this.managerAddress,
+                signer: this._managerAddress,
                 serverAction: ServerAction.VALUE_TRANSFER,
-                destination: this.ownerAddress ?? '',
+                destination: this._ownerAddress ?? '',
                 gasLimit,
                 gasPrice,
                 value,
                 creationBlockNumber: currentBlock
             };
-            const { txHash } = await this.transactionManager.sendTransaction(
+            const { txHash } = await this._transactionManager.sendTransaction(
                 details
             );
             transactionHashes.push(txHash);
@@ -464,11 +476,11 @@ export class RegistrationManager {
     ): Promise<string[]> {
         // sending workers' balance to owner (currently one worker, todo: extend to multiple)
         const transactionHashes: string[] = [];
-        const gasPrice = await this.contractInteractor.provider.getGasPrice();
+        const gasPrice = await this._contractInteractor.provider.getGasPrice();
         const gasLimit = BigNumber.from(mintxgascost);
         const txCost = gasPrice.mul(gasLimit);
-        const workerBalance = await this.contractInteractor.getBalance(
-            this.workerAddress
+        const workerBalance = await this._contractInteractor.getBalance(
+            this._workerAddress
         );
         const value = workerBalance.sub(txCost);
         if (workerBalance.gte(txCost)) {
@@ -476,15 +488,15 @@ export class RegistrationManager {
                 `Sending workers' RBTC balance ${workerBalance.toString()} to owner`
             );
             const details: SendTransactionDetails = {
-                signer: this.workerAddress,
+                signer: this._workerAddress,
                 serverAction: ServerAction.VALUE_TRANSFER,
-                destination: this.ownerAddress ?? '',
+                destination: this._ownerAddress ?? '',
                 gasLimit,
                 gasPrice,
                 value,
                 creationBlockNumber: currentBlock
             };
-            const { txHash } = await this.transactionManager.sendTransaction(
+            const { txHash } = await this._transactionManager.sendTransaction(
                 details
             );
             transactionHashes.push(txHash);
@@ -499,7 +511,7 @@ export class RegistrationManager {
 
     async _queryLatestWorkerAddedEvent(): Promise<TypedEvent | undefined> {
         const workersAddedEvents =
-            await this.contractInteractor.getPastEventsForHub(
+            await this._contractInteractor.getPastEventsForHub(
                 {
                     fromBlock: 1
                 },
@@ -510,8 +522,8 @@ export class RegistrationManager {
     }
 
     _isWorkerValid(): boolean {
-        return this.lastWorkerAddedTransaction
-            ? this.lastWorkerAddedTransaction.event === 'RelayWorkersAdded'
+        return this._lastWorkerAddedTransaction
+            ? this._lastWorkerAddedTransaction.event === 'RelayWorkersAdded'
             : false;
     }
 
@@ -519,7 +531,7 @@ export class RegistrationManager {
         const isRegistrationCorrect = this._isRegistrationCorrect();
 
         return (
-            this.stakeRequired.isSatisfied &&
+            this._stakeRequired.isSatisfied &&
             this.isStakeLocked &&
             isRegistrationCorrect
         );
@@ -530,12 +542,12 @@ export class RegistrationManager {
             return;
         }
         const message = `\nNot registered yet. Prerequisites:
-${this.balanceRequired.description}
-${this.stakeRequired.description}
+${this._balanceRequired.description}
+${this._stakeRequired.description}
 Stake locked   | ${boolString(this.isStakeLocked)}
-Manager        | ${this.managerAddress}
-Worker         | ${this.workerAddress}
-Owner          | ${this.ownerAddress ?? chalk.red('k256')}
+Manager        | ${this._managerAddress}
+Worker         | ${this._workerAddress}
+Owner          | ${this._ownerAddress ?? chalk.red('k256')}
 `;
         log.info(message);
     }
@@ -549,8 +561,7 @@ Owner          | ${this.ownerAddress ?? chalk.red('k256')}
             return;
         }
         log.info(
-            `Handling ${flatDecodedEvents.length} events emitted since block: ${
-                fromBlock?.toString() ?? ''
+            `Handling ${flatDecodedEvents.length} events emitted since block: ${fromBlock?.toString() ?? ''
             }`
         );
         for (const decodedEvent of flatDecodedEvents) {

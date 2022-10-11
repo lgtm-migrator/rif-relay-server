@@ -19,7 +19,6 @@ import {
     utils,
     BigNumber,
     PopulatedTransaction,
-    UnsignedTransaction,
     FixedNumber,
     constants
 } from 'ethers';
@@ -92,8 +91,9 @@ created at   | block #${creationBlockNumber}
     }
 
     printSendTransactionLog(
-        transaction: UnsignedTransaction,
-        from: string
+        transaction: PopulatedTransaction,
+        from: string,
+        hash: string
     ): void {
         const valueHumanReadable: string = utils.formatEther(
             transaction.value ?? ''
@@ -103,6 +103,7 @@ created at   | block #${creationBlockNumber}
             'gwei'
         );
         log.info(`Broadcasting transaction:
+hash         | ${hash}
 from         | ${from}
 to           | 0x${transaction.to ?? ''}
 value        | ${
@@ -113,7 +114,7 @@ gasPrice     | ${
             transaction.gasPrice?.toString() ?? ''
         } (${gasPriceHumanReadable} gwei)
 gasLimit     | ${transaction.gasLimit?.toString() ?? ''}
-data         | 0x${transaction.data as string}
+data         | 0x${transaction.data ?? ''}
 `);
     }
 
@@ -147,7 +148,7 @@ data         | 0x${transaction.data as string}
             }
         }
 
-        return this.config.blockchain.defaultGasLimit;
+        return BigNumber.from(this.config.blockchain.defaultGasLimit);
     }
 
     async sendTransaction({
@@ -169,7 +170,7 @@ data         | 0x${transaction.data as string}
         try {
             const nonce = await this.pollNonce(signer);
 
-            //TO-DO check what is the best approach
+            //TODO check what is the best approach
             const txToSign = {
                 ...method,
                 to: destination,
@@ -196,7 +197,7 @@ data         | 0x${transaction.data as string}
             storedTx = createStoredTransaction(txToSign, metadata);
             this.nonces[signer]++;
             await this.txStoreManager.putTx(storedTx, false);
-            this.printSendTransactionLog(txToSign, signer);
+            this.printSendTransactionLog(txToSign, signer, signedTransaction.txHash);
         } finally {
             releaseMutex();
         }
@@ -277,7 +278,7 @@ data         | 0x${transaction.data as string}
             Number(tx.gasPrice),
             isMaxGasPriceReached
         );
-        this.printSendTransactionLog(txToSign, tx.from);
+        this.printSendTransactionLog(txToSign, tx.from, signedTransaction.txHash);
         const currentNonce = await this.contractInteractor.getTransactionCount(
             tx.from
         );
@@ -454,7 +455,7 @@ data         | 0x${transaction.data as string}
             const { newGasPrice, isMaxGasPriceReached } =
                 this._resolveNewGasPrice(oldestPendingTx.gasPrice);
 
-            //TO-DO check if there is no issue with the type conversion
+            //TODO check if there is no issue with the type conversion
             const underpricedTransactions = sortedTxs.filter(
                 (it) => it.gasPrice < newGasPrice
             );

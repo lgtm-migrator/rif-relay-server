@@ -12,27 +12,27 @@ import { sleep } from '../../Utils';
  * This is helper class to execute commands to interact with the server
  */
 export abstract class CommandClient {
-    protected readonly httpClient: HttpClient;
+    protected readonly _httpClient: HttpClient;
 
-    protected readonly config: EnvelopingConfig;
+    protected readonly _config: EnvelopingConfig;
 
-    protected readonly provider: JsonRpcProvider | Wallet;
+    protected readonly _provider: JsonRpcProvider | Wallet;
 
-    protected contractInteractor: ContractInteractor | undefined;
+    protected _contractInteractor!: ContractInteractor;
 
     constructor(host: string, config: EnvelopingConfig, mnemonic?: string) {
-        this.provider = new JsonRpcProvider(host);
+        this._provider = new JsonRpcProvider(host);
         if (mnemonic) {
-            this.provider = Wallet.fromMnemonic(mnemonic);
+            this._provider = Wallet.fromMnemonic(mnemonic);
         }
-        this.httpClient = new HttpClient(new HttpWrapper(), config);
-        this.config = config;
+        this._httpClient = new HttpClient(new HttpWrapper(), config);
+        this._config = config;
     }
 
     async initContractInteractor() {
-        this.contractInteractor = await ContractInteractor.getInstance(
-            this.provider as JsonRpcProvider,
-            this.config
+        this._contractInteractor = await ContractInteractor.getInstance(
+            this._provider as JsonRpcProvider,
+            this._config
         );
     }
 
@@ -41,7 +41,7 @@ export abstract class CommandClient {
     ): Promise<Signer> {
         let accounts: string[] = [];
         try {
-            const tempProvider = this.provider as JsonRpcProvider;
+            const tempProvider = this._provider as JsonRpcProvider;
             accounts = await tempProvider.listAccounts();
             for (let i = 0; i < accounts.length; i++) {
                 const signer = tempProvider.getSigner(i);
@@ -65,7 +65,7 @@ export abstract class CommandClient {
     }
 
     async isRelayReady(relayUrl: string): Promise<boolean> {
-        const response = await this.httpClient.getPingResponse(relayUrl);
+        const response = await this._httpClient.getPingResponse(relayUrl);
 
         return response.ready;
     }

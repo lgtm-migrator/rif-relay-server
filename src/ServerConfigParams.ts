@@ -1,6 +1,6 @@
 import type { ContractInteractor } from '@rsksmart/rif-relay-common/dist/src';
 
-import { BigNumber, constants } from 'ethers';
+import { constants } from 'ethers';
 import type { LogLevelNumbers } from 'loglevel';
 
 import { validateAddress } from './Utils';
@@ -45,8 +45,8 @@ export type BlockchainConfig = {
     successfulRoundsForReady: number;
     confirmationsNeeded: number;
     retryGasPriceFactor: string;
-    maxGasPrice: string;
-    defaultGasLimit: BigNumber;
+    maxGasPrice: number;
+    defaultGasLimit: number;
     estimateGasFactor: string;
     versionRegistryDelayPeriod?: number;
 };
@@ -102,8 +102,8 @@ const serverDefaultConfiguration: ServerConfigParams = {
         successfulRoundsForReady: 3, // successful mined blocks to become ready after exception
         confirmationsNeeded: 12,
         retryGasPriceFactor: '1.2',
-        defaultGasLimit: BigNumber.from(500000),
-        maxGasPrice: (100e9).toString(),
+        defaultGasLimit: 500000,
+        maxGasPrice: 100e9,
         estimateGasFactor: '1.2'
     }
 };
