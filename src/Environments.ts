@@ -4,41 +4,41 @@
  * TODO: see the differences between networks we want to support and make project structure multi-chain
  */
 export type RelayHubConfiguration = {
-    maxWorkerCount: number;
-    minimumUnstakeDelay: number;
-    minimumStake: string;
-    minimumEntryDepositValue: string;
+  maxWorkerCount: number;
+  minimumUnstakeDelay: number;
+  minimumStake: string;
+  minimumEntryDepositValue: string;
 };
 
 export type Environment = {
-    readonly chainId: number;
-    readonly mintxgascost: number;
-    readonly relayHubConfiguration: RelayHubConfiguration;
+  readonly chainId: number;
+  readonly mintxgascost: number;
+  readonly relayHubConfiguration: RelayHubConfiguration;
 };
 
 const defaultRelayHubConfiguration: RelayHubConfiguration = {
-    maxWorkerCount: 10,
-    minimumStake: (1e18).toString(),
-    minimumUnstakeDelay: 1000,
-    minimumEntryDepositValue: (1e18).toString()
+  maxWorkerCount: 10,
+  minimumStake: (1e18).toString(),
+  minimumUnstakeDelay: 1000,
+  minimumEntryDepositValue: (1e18).toString(),
 };
 
 const environments: { [key: string]: Environment } = {
-    istanbul: {
-        chainId: 1,
-        relayHubConfiguration: defaultRelayHubConfiguration,
-        mintxgascost: 21000
-    },
-    constantinople: {
-        chainId: 1,
-        relayHubConfiguration: defaultRelayHubConfiguration,
-        mintxgascost: 21000
-    },
-    rsk: {
-        chainId: 33,
-        relayHubConfiguration: defaultRelayHubConfiguration,
-        mintxgascost: 21000
-    }
+  istanbul: {
+    chainId: 1,
+    relayHubConfiguration: defaultRelayHubConfiguration,
+    mintxgascost: 21000,
+  },
+  constantinople: {
+    chainId: 1,
+    relayHubConfiguration: defaultRelayHubConfiguration,
+    mintxgascost: 21000,
+  },
+  rsk: {
+    chainId: 33,
+    relayHubConfiguration: defaultRelayHubConfiguration,
+    mintxgascost: 21000,
+  },
 };
 
 export const defaultEnvironment = environments['rsk'];
