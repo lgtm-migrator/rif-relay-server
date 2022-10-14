@@ -162,7 +162,7 @@ export class RegistrationManager {
     this.printEvents(decodedEvents, options);
     let transactionHashes: string[] = [];
     // TODO: what about 'penalize' events? should send balance to owner, I assume
-    for (const eventData of decodedEvents.flat()) {
+    for (const eventData of decodedEvents) {
       switch (eventData.event) {
         case 'StakeAdded':
           await this.refreshStake();
@@ -536,19 +536,18 @@ Owner          | ${this._ownerAddress ?? chalk.red('k256')}
   }
 
   printEvents(
-    decodedEvents: Array<Array<TypedEvent>>,
+    decodedEvents: Array<TypedEvent>,
     { fromBlock }: PastEventOptions
   ): void {
-    const flatDecodedEvents = decodedEvents.flat();
     if (decodedEvents.length === 0) {
       return;
     }
     log.info(
-      `Handling ${flatDecodedEvents.length} events emitted since block: ${
+      `Handling ${decodedEvents.length} events emitted since block: ${
         fromBlock?.toString() ?? ''
       }`
     );
-    for (const decodedEvent of flatDecodedEvents) {
+    for (const decodedEvent of decodedEvents) {
       log.info(`
 Name      | ${decodedEvent.event?.padEnd(25) ?? ''}
 Block     | ${decodedEvent.blockNumber}

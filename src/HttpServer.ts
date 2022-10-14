@@ -179,9 +179,9 @@ export class HttpServer {
       const pingResponse = this._relayServer.pingHandler();
       res.send(pingResponse);
       log.info(
-        `address ${pingResponse.relayWorkerAddress} sent. ready: ${
-          pingResponse.ready ? 'true' : 'false'
-        }`
+        `address ${
+          pingResponse.relayWorkerAddress
+        } sent. ready: ${pingResponse.ready.toString()}`
       );
     } catch (e) {
       if (e instanceof Error) {

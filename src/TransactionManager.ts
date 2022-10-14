@@ -169,8 +169,8 @@ data         | 0x${transaction.data ?? ''}
       const nonce = await this.pollNonce(signer);
 
       //TODO check what is the best approach
-      const txToSign = {
-        ...method,
+      const txToSign: PopulatedTransaction = {
+        ...(method ? method : {}),
         to: destination,
         value,
         gasLimit,
@@ -248,10 +248,10 @@ data         | 0x${transaction.data ?? ''}
     isMaxGasPriceReached: boolean
   ): Promise<SignedTransactionDetails> {
     // Resend transaction with exactly the same values except for gas price
-    const txToSign = {
+    const txToSign: PopulatedTransaction = {
       ...tx,
       gasPrice: newGasPrice,
-    } as PopulatedTransaction;
+    };
 
     const keyManager = this.managerKeyManager.isSigner(tx.from)
       ? this.managerKeyManager
@@ -290,7 +290,7 @@ data         | 0x${transaction.data ?? ''}
     return signedTransaction;
   }
 
-  _resolveNewGasPrice(oldGasPrice: BigNumber): {
+  _resolveNewGasPrice(oldGasPrice: BigNumber | undefined): {
     newGasPrice: BigNumber;
     isMaxGasPriceReached: boolean;
   } {
@@ -418,7 +418,7 @@ data         | 0x${transaction.data ?? ''}
     const nonce = await this.contractInteractor.getTransactionCount(signer);
     const oldestPendingTx = sortedTxs[0];
     if (oldestPendingTx) {
-      if (oldestPendingTx.nonce < nonce) {
+      if (oldestPendingTx.nonce && oldestPendingTx.nonce < nonce) {
         log.debug(
           `${signer} : transaction is mined, awaiting confirmations. Account nonce: ${nonce}, oldest transaction: nonce: ${oldestPendingTx.nonce} txId: ${oldestPendingTx.txId}`
         );
@@ -447,7 +447,7 @@ data         | 0x${transaction.data ?? ''}
 
       //TODO check if there is no issue with the type conversion
       const underpricedTransactions = sortedTxs.filter(
-        (it) => it.gasPrice < newGasPrice
+        (it) => it.gasPrice && it.gasPrice < newGasPrice
       );
       for (const transaction of underpricedTransactions) {
         const boostedTransactionDetails = await this.resendTransaction(
@@ -458,7 +458,11 @@ data         | 0x${transaction.data ?? ''}
         );
         boostedTransactions.set(transaction.txId, boostedTransactionDetails);
         log.debug(
-          `Replaced transaction: nonce: ${transaction.nonce} sender: ${signer} | ${transaction.txId} => ${boostedTransactionDetails.txHash}`
+          `Replaced transaction: nonce: ${
+            transaction.nonce ?? 'unnonce'
+          } sender: ${signer} | ${transaction.txId} => ${
+            boostedTransactionDetails.txHash
+          }`
         );
         if (transaction.attempts > 2) {
           log.debug(

@@ -30,12 +30,12 @@ export function boolString(bool: boolean): string {
 }
 
 export function getLatestEventData(
-  events: Array<Array<TypedEvent>>
+  events: Array<TypedEvent>
 ): TypedEvent | undefined {
   if (events.length === 0) {
     return;
   }
-  const eventDataSorted = events.flat().sort((a: TypedEvent, b: TypedEvent) => {
+  const eventDataSorted = events.sort((a: TypedEvent, b: TypedEvent) => {
     if (a.blockNumber === b.blockNumber) {
       return b.transactionIndex - a.transactionIndex;
     }

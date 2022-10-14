@@ -694,14 +694,13 @@ latestBlock timestamp   | ${latestBlock.timestamp}
     let transactionHashes: string[] = [];
     const hubEventsSinceLastScan = await this.getAllHubEventsSinceLastScan();
     await this._updateLatestTxBlockNumber(hubEventsSinceLastScan);
-    const flatHubEventsSinceLastScan = hubEventsSinceLastScan.flat();
     const shouldRegisterAgain = await this._shouldRegisterAgain(
       currentBlockNumber,
-      flatHubEventsSinceLastScan
+      hubEventsSinceLastScan
     );
     transactionHashes = transactionHashes.concat(
       await this.registrationManager.handlePastEvents(
-        flatHubEventsSinceLastScan,
+        hubEventsSinceLastScan,
         this.lastScannedBlock,
         currentBlockNumber,
         shouldRegisterAgain
@@ -718,7 +717,7 @@ latestBlock timestamp   | ${latestBlock.timestamp}
 
       return transactionHashes;
     }
-    this.handlePastHubEvents(currentBlockNumber, flatHubEventsSinceLastScan);
+    this.handlePastHubEvents(currentBlockNumber, hubEventsSinceLastScan);
     const workerIndex = 0;
     transactionHashes = transactionHashes.concat(
       await this.replenishServer(workerIndex, currentBlockNumber)
@@ -774,9 +773,9 @@ latestBlock timestamp   | ${latestBlock.timestamp}
       isPendingActivityTransaction
     ) {
       log.debug(
-        `_shouldRegisterAgain returns false isPendingActivityTransaction=${
-          isPendingActivityTransaction ? 'true' : 'false'
-        } registrationBlockRate=${this.config.blockchain.registrationBlockRate}`
+        `_shouldRegisterAgain returns false isPendingActivityTransaction=${isPendingActivityTransaction.toString()} registrationBlockRate=${
+          this.config.blockchain.registrationBlockRate
+        }`
       );
 
       return false;
@@ -787,9 +786,7 @@ latestBlock timestamp   | ${latestBlock.timestamp}
       this.config.blockchain.registrationBlockRate;
     if (!registrationExpired) {
       log.debug(
-        `_shouldRegisterAgain registrationExpired=${
-          registrationExpired ? 'true' : 'false'
-        } currentBlock=${currentBlock} latestTxBlockNumber=${latestTxBlockNumber} registrationBlockRate=${
+        `_shouldRegisterAgain registrationExpired=${registrationExpired.toString()} currentBlock=${currentBlock} latestTxBlockNumber=${latestTxBlockNumber} registrationBlockRate=${
           this.config.blockchain.registrationBlockRate
         }`
       );
@@ -825,7 +822,7 @@ latestBlock timestamp   | ${latestBlock.timestamp}
     }
   }
 
-  async getAllHubEventsSinceLastScan(): Promise<Array<Array<TypedEvent>>> {
+  async getAllHubEventsSinceLastScan(): Promise<Array<TypedEvent>> {
     const options = {
       fromBlock: this.lastScannedBlock + 1,
       toBlock: 'latest',
@@ -854,7 +851,7 @@ latestBlock timestamp   | ${latestBlock.timestamp}
   }
 
   async _updateLatestTxBlockNumber(
-    eventsSinceLastScan: Array<Array<TypedEvent>>
+    eventsSinceLastScan: Array<TypedEvent>
   ): Promise<void> {
     const latestTransactionSinceLastScan =
       getLatestEventData(eventsSinceLastScan);
@@ -875,7 +872,7 @@ latestBlock timestamp   | ${latestBlock.timestamp}
   }
 
   async _queryLatestActiveEvent(): Promise<TypedEvent | undefined> {
-    const events: Array<Array<TypedEvent>> =
+    const events: Array<TypedEvent> =
       // TODO the topic is still missing, I need to figure it out
       await this.contractInteractor.getPastEventsForHub({
         fromBlock: 1,
